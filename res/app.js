@@ -353,10 +353,18 @@ function applyDbTemplate() {
   if (hint) hint.textContent = '已套用【' + label + '】模板：改成实际的地址/账号密码即可';
 }
 
-function editSource(name) {
+async function editSource(name) {
   const s = name ? findSource(name) : null;
   const title = s ? '编辑数据源：' + s.name : '新增数据源';
-  const kind = s ? dbKindFromConn(s.connection) : 'sqlite';
+  // 编辑时把当前连接串回填到输入框（走单独的完整串接口；列表里仍是脱敏值）
+  let current = '';
+  if (s) {
+    try {
+      const got = unwrap(await api('/api/datasource/get', { method: 'POST', body: JSON.stringify({ name }) }));
+      current = got.connection || '';
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  const kind = current ? dbKindFromConn(current) : (s ? '' : 'sqlite');
   const kindOptions = DB_KIND_LABELS
     .map(([v, t]) => `<option value="${v}" ${kind === v ? 'selected' : ''}>${t}</option>`)
     .join('');
@@ -378,8 +386,8 @@ function editSource(name) {
     <div class="form-group">
       <label>连接串（Pek.RCode 格式，支持 enc:v1: 加密值）</label>
       <textarea id="f-conn" rows="6" spellcheck="false" autocomplete="off"
-        placeholder="Server=127.0.0.1;Port=3306;Database=demo;Uid=root;Pwd=xxx;Provider=MySql">${s ? '' : DB_TEMPLATES.sqlite}</textarea>
-      <div class="form-desc">${s ? '当前：' + esc(s.connection) + '（留空 = 保持当前连接串不变）' : '选好类型后模板会自动填入，按实际情况改地址与账号密码'}</div>
+        placeholder="Server=127.0.0.1;Port=3306;Database=demo;Uid=root;Pwd=xxx;Provider=MySql">${esc(current || (s ? '' : DB_TEMPLATES.sqlite))}</textarea>
+      <div class="form-desc">${s ? '已回填当前连接串（可直接修改，保存即生效；清空则保持原值）' : '选好类型后模板会自动填入，按实际情况改地址与账号密码'}</div>
     </div>
     <div class="form-group">
       <label>令牌（项目侧 Password=）</label>
@@ -589,6 +597,7 @@ function toggleTheme() {
   font-size:12px;line-height:1.7;outline:none;resize:vertical;word-break:break-all}
 #f-conn:focus{border-color:var(--brand-500);box-shadow:0 0 0 3px rgba(91,91,255,.25)}
 #f-kind{width:100%;box-sizing:border-box}
+#modal-body .form-desc{word-break:break-all;white-space:normal;line-height:1.6}
 `;
   document.head.appendChild(st);
 

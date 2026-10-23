@@ -59,6 +59,7 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     router.map_get("/api/status", guard(Arc::clone(&proxy), status));
     router.map_get("/api/audit", guard(Arc::clone(&proxy), audit));
     router.map_post("/api/datasource", guard(Arc::clone(&proxy), save_source));
+    router.map_post("/api/datasource/get", guard(Arc::clone(&proxy), get_source));
     router.map_post("/api/datasource/delete", guard(Arc::clone(&proxy), delete_source));
     router.map_post("/api/readonly", guard(Arc::clone(&proxy), set_read_only));
     router.map_post("/api/server", guard(Arc::clone(&proxy), save_server));
@@ -220,6 +221,16 @@ fn save_source(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
     match proxy.upsert_source(section) {
         Ok(view) => ok(source_json(&view)),
         Err(e) => fail(400, &e),
+    }
+}
+
+/// `POST /api/datasource/get`：取完整连接串（面板「编辑」回填；仅鉴权后可访问）。
+fn get_source(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    let body = json_body(ctx);
+    let name = text(&body, "name");
+    match proxy.source_connection(&name) {
+        Ok(connection) => ok(json!({ "name": name, "connection": connection })),
+        Err(e) => fail(404, &e),
     }
 }
 

@@ -230,6 +230,23 @@ impl Proxy {
             .unwrap_or_default()
     }
 
+    /// 取某数据源的**完整连接串**（面板「编辑」回填用）。
+    ///
+    /// 仅供已鉴权的面板接口调用；面板列表/状态接口仍只返回脱敏值。
+    pub fn source_connection(&self, name: &str) -> Result<String, String> {
+        let registry = self.registry.read().map_err(|_| "状态锁异常".to_string())?;
+        let index = registry
+            .by_name
+            .get(&name.trim().to_ascii_lowercase())
+            .copied()
+            .ok_or_else(|| format!("数据源不存在：{name}"))?;
+        registry
+            .sources
+            .get(index)
+            .map(|s| s.section.connection.clone())
+            .ok_or_else(|| format!("数据源不存在：{name}"))
+    }
+
     /// 运行时长（秒）。
     pub fn uptime_secs(&self) -> u64 {
         self.started.elapsed().as_secs()
