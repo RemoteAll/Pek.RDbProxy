@@ -77,13 +77,30 @@ $env:PEK_RDBPROXY_BASE='G:\Code\Rust\Pek.RDbProxy'
 
 ### 项目侧接入
 
+**两层连接串，别混**：
+
+| 层 | 写在哪 | 内容 |
+|---|---|---|
+| 真实库（SQLite/MySQL/PG…） | **只在代理端** `Config/Proxy.toml` 的 `Connection` | `Data Source=Data/demo.db;Provider=SQLite` / `Server=…;Uid=…;Pwd=…;Provider=MySql` |
+| 项目侧 | 每个项目自己的配置 | **永远是这一行**：`Server=http://代理IP:5599;Database=<数据源名>;Password=<令牌>;provider=network` |
+
 ```rust
-// 项目里无需任何数据库账号
+// Rust（Pek.RCode）：项目里无需任何数据库账号
 let conn = "Server=http://127.0.0.1:5599;Database=demo;Password=<Token>;provider=network";
 let dal = Pek.RCode::Dal::open(conn, model)?;
 ```
 
-令牌在面板「新增数据源」时自动生成，或手工填写；连接串支持 `enc:v1:` 加密值（`-encrypt <明文>`）。
+```csharp
+// C#（DH.NCode / XCode）：DH.NCode 自带 NetworkDb（DatabaseType.Network），格式完全相同，直接可用
+DAL.AddConnStr("Membership", "Server=http://127.0.0.1:5599;Database=demo;Password=<Token>;Provider=Network", null, "Network");
+var list = User.FindAll();   // 底层自动转成 /Db/Query、/Db/Execute、/Db/InsertAndGetIdentity、/Db/QueryCount、/Db/GetTables
+```
+
+- 端点与 C# `DbClient` 一一对应：`Db/Login`、`Db/Query`、`Db/Execute`、`Db/InsertAndGetIdentity`、`Db/QueryCount`、`Db/GetTables`，
+  所以 XCode 实体 CRUD、`Count()`、插入取自增都能走通。
+- **不要**把 SQLite/MySQL 的原始连接串写到项目里 —— 那样等于绕过代理（字段策略、审计、令牌都不生效）。
+
+令牌在面板「新增数据源」时自动生成，或手工填写；代理端连接串支持 `enc:v1:` 加密值（`-encrypt <明文>`）。
 
 ## 配置 `Config/Proxy.toml`
 
