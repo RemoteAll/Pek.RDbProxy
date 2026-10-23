@@ -96,6 +96,7 @@ Description = "本地演示"
 | `-token` | 生成一个随机令牌（粘到新数据源的「令牌」里） |
 | `-encrypt <plain>` | 生成 `enc:v1:` 加密串 |
 | `-install` / `-uninstall` | 安装 / 卸载系统服务 |
+| `-reinstall` | 重装服务（卸载后按**当前程序路径**重新注册；服务已存在/注册项变旧时用） |
 | `-start` / `-stop` / `-restart` | 服务控制 |
 | `-RegisterAgent` | 注册到星尘（影子模式：升级 = 直接覆盖程序文件即自动重启） |
 | `-run` | 前台运行（默认） |
@@ -231,6 +232,25 @@ cd H:\Run\pek-rdbproxy
 **Q7 怎么升级**
 
 设置页「⬆ 在线升级」上传新程序；或把程序放进 `Update/` 目录；星尘托管下也可直接覆盖源程序文件。约 10 秒自动替换并重启。
+
+**Q8 安装提示「服务已存在：PekRDbProxy」/ 启动报 1053**
+
+1053 是 Windows 服务启动超时，常见两个原因：**注册项指向旧路径/旧参数**（早期版本注册的 binPath 可能没有 `-s`，SCM 拉起后程序不认识参数立即退出），或**旧实例没退干净还占着 5599 端口**（新实例绑定失败→退出）。
+
+```powershell
+.\pek-rdbproxy.exe -reinstall   # 一步：卸载（停服务+删注册）→ 按当前程序重新注册并启动
+# 或分开做：
+.\pek-rdbproxy.exe -uninstall
+.\pek-rdbproxy.exe -install
+```
+
+- `-uninstall` 会**等进程真正退出**再删注册；若报「服务未能停止」（进程不响应停止控制），先 `Get-Process pek-rdbproxy | Stop-Process -Force` 再试，或重启系统。
+- 新版 `install.ps1` 已自动处理：检测到旧服务就直接 `-reinstall`，并把 `sc qc` 的注册信息打进日志。
+- 确认注册项：`sc qc PekRDbProxy`，`BINARY_PATH_NAME` 应为 `"<程序路径>" -s`。
+
+**Q9 服务停不下来 / 卸载后端口还被占用**
+
+v0.1.7 起服务主体会响应 SCM 的 Stop（此前主循环无限等待、`sc stop` 只能超时，进程残留）。若在**旧版本**上遇到，手动 `Get-Process pek-rdbproxy | Stop-Process -Force`，再用新版 `-reinstall`。
 
 ## 字段级安全（表管理 / 列策略）
 

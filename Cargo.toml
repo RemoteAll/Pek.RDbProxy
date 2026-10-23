@@ -1,6 +1,6 @@
 [package]
 name = "pek-rdbproxy"
-version = "0.1.5"
+version = "0.1.7"
 edition = "2024"
 description = "本地数据库代理：项目侧只见代理地址与令牌，真实连接串只留在代理端"
 license = "MIT"

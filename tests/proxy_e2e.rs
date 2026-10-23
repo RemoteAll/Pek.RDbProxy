@@ -245,6 +245,31 @@ fn panel_login_uses_jwt_and_crud_works() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// 首启默认账号：`admin/admin` 本身不满足强度规则，但必须能建（登录后立刻强制升级）。
+#[test]
+fn default_account_is_created_even_though_admin_is_weak() {
+    let base = temp_dir("default-account");
+    let proxy = build_proxy(&base, true, "");
+    assert!(proxy.ensure_default_account().expect("首启应可创建"));
+    assert!(proxy.authenticate("admin", "admin"), "默认账号应可登录");
+    assert!(proxy.uses_default_password());
+    assert!(
+        !proxy.ensure_default_account().expect("第二次应为未创建"),
+        "已有密码时不应覆盖"
+    );
+
+    let upgraded = proxy
+        .upgrade_weak_password()
+        .expect("应自动升级")
+        .expect("应返回新密码");
+    assert!(upgraded.len() >= 10, "新密码应满足长度：{upgraded}");
+    assert!(!proxy.uses_default_password(), "升级后不应再是默认密码");
+    assert!(!proxy.authenticate("admin", "admin"), "旧默认密码应失效");
+    assert!(proxy.authenticate("admin", &upgraded));
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// 从 JSON 文本里取字符串字段（避免为测试引入 serde_json 依赖链以外的解析）。
 fn json_field(body: &str, key: &str) -> String {
     let needle = format!("\"{key}\":\"");

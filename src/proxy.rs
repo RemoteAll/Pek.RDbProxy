@@ -540,6 +540,23 @@ impl Proxy {
         verify_password(&self.server_config().web_password_hash, "admin")
     }
 
+    /// 首次启动写入内置默认账号 `admin/admin`，返回是否刚创建。
+    ///
+    /// **故意绕过强度校验**：密码 `admin` 本身不满足规则，但它是"首启一次性"凭据——
+    /// 登录成功后 `upgrade_weak_password` 会立刻换成强密码并只展示一次（对齐 Pek.RAgent）。
+    /// 走 `update_server` 会被 `password_strength` 拒绝，导致首启后**根本没有可用密码**。
+    pub fn ensure_default_account(&self) -> Result<bool, String> {
+        if !self.server_config().web_password_hash.is_empty() {
+            return Ok(false);
+        }
+        let mut next = self.server_config();
+        next.web_user_name = "admin".to_string();
+        next.web_password_hash = hash_password("admin");
+        *self.server.write().map_err(|_| "状态锁异常".to_string())? = next;
+        self.save_config()?;
+        Ok(true)
+    }
+
     /// 登录成功后发现仍是默认密码 → 自动换成强密码并写回，返回新密码（一次性展示）。
     pub fn upgrade_weak_password(&self) -> Result<Option<String>, String> {
         let server = self.server_config();

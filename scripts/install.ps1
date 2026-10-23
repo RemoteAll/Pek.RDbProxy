@@ -83,19 +83,37 @@ if (-not (Test-Path $config)) {
 
 # 4) 注册并启动服务
 if (-not $SkipService) {
-    Write-Host "  注册 Windows 服务…"
-    & $dest -install | Out-Null
+    # 已存在的旧注册项可能绑的是旧路径/旧参数（早期版本注册的 binPath 若缺 -s，SCM 拉起会 1053），
+    # 所以只要服务存在就一律「重装」，让注册项绑定当前程序。
+    $existing = Get-Service -Name 'PekRDbProxy' -ErrorAction SilentlyContinue
+    if ($existing) {
+        Write-Host "  已存在旧服务，重装以绑定当前程序（$dest）…" -ForegroundColor Yellow
+        & $dest -reinstall
+        $installCode = $LASTEXITCODE
+    } else {
+        Write-Host "  注册 Windows 服务…"
+        & $dest -install
+        $installCode = $LASTEXITCODE
+    }
+    if ($installCode -ne 0) {
+        Write-Host "  服务注册/重装失败（退出码 $installCode）。" -ForegroundColor Red
+        Write-Host "  · 需管理员权限：以管理员身份重新打开 PowerShell 再执行本脚本" -ForegroundColor Yellow
+        Write-Host "  · 若提示「服务已存在/归属冲突」：$dest -uninstall（或 sc delete PekRDbProxy）后再装" -ForegroundColor Yellow
+    }
     Start-Sleep -Seconds 1
     Write-Host "  启动服务…"
-    & $dest -start | Out-Null
+    & $dest -start | Out-Null   # 已运行会直接返回成功；失败时下面统一诊断
     Start-Sleep -Seconds 2
     $svc = Get-Service -Name 'PekRDbProxy' -ErrorAction SilentlyContinue
     if ($svc) { Write-Host ("  服务状态：" + $svc.Status) -ForegroundColor ($(if ($svc.Status -eq 'Running') { 'Green' } else { 'Red' })) }
     if ($svc -and $svc.Status -ne 'Running') {
-        Write-Host "  服务未能启动，最近日志：" -ForegroundColor Yellow
+        Write-Host "  服务未能启动，注册信息（BIN_PATH 应指向当前程序并带 -s）：" -ForegroundColor Yellow
+        & sc.exe qc PekRDbProxy
+        Write-Host "  最近日志：" -ForegroundColor Yellow
         $log = Get-ChildItem (Join-Path $Target 'Log') -Filter '*.log' -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($log) { Get-Content $log.FullName -Tail 8 -Encoding UTF8 | ForEach-Object { Write-Host "    $_" } }
+        else { Write-Host "    （还没有日志：说明服务进程没真正起来，多半是 BIN_PATH/权限问题）" -ForegroundColor Yellow }
         Write-Host "  可直接前台运行验证：$dest" -ForegroundColor Yellow
     }
 }

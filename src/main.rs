@@ -11,8 +11,14 @@ use dhrust::logs::LogLevel;
 use dhrust::net::http::HttpServerOptions;
 use dhrust::net::listener::Listener;
 
-use pek_rdbproxy::proxy::{Proxy, ServerPatch};
+use pek_rdbproxy::proxy::Proxy;
 use pek_rdbproxy::{VERSION, base_dir, config, panel, service};
+
+/// 服务停止标志：SCM 发 Stop/Shutdown 时置位，主循环据此退出并释放监听。
+///
+/// 不响应停止会导致 `sc stop` 超时、进程残留占着端口，进而下次 `-install` / `-start`
+/// 失败（典型现象：服务一直停在 STOP_PENDING、或新实例绑定端口失败）。
+static SHUTDOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,6 +40,8 @@ fn main() {
                 | "--install"
                 | "-uninstall"
                 | "--uninstall"
+                | "-reinstall"
+                | "--reinstall"
                 | "-start"
                 | "--start"
                 | "-stop"
@@ -77,6 +85,7 @@ fn main() {
             reset_password_command(&base, args.get(1).map(String::as_str))
         }
         Some("-install" | "--install") => service_command(&base, "install"),
+        Some("-reinstall" | "--reinstall") => service_command(&base, "reinstall"),
         Some("-uninstall" | "--uninstall") => service_command(&base, "uninstall"),
         Some("-start" | "--start") => service_command(&base, "start"),
         Some("-stop" | "--stop") => service_command(&base, "stop"),
@@ -93,7 +102,11 @@ fn main() {
                 let run = move || {
                     run_command(b.clone());
                 };
-                dhrust::service::windows::run_as_service("PekRDbProxy", || {}, run);
+                dhrust::service::windows::run_as_service(
+                    "PekRDbProxy",
+                    || SHUTDOWN.store(true, std::sync::atomic::Ordering::SeqCst),
+                    run,
+                );
                 0
             }
             #[cfg(not(windows))]
@@ -126,6 +139,7 @@ fn print_help() {
          \n\
          服务化（星尘托管 / systemd / Windows 服务）：\n\
          \x20 -install / -uninstall / -start / -stop / -restart\n\
+         \x20 -reinstall     重装服务（卸载后按当前程序路径重新注册；服务已存在/注册项变旧时用）\n\
          \x20 -RegisterAgent   注册到星尘（Pek.RAgent）托管（Mode=11 影子模式，覆盖即升级）\n\
          \n\
          项目侧连接串：\n\
@@ -303,6 +317,7 @@ fn service_command(base: &std::path::Path, action: &str) -> i32 {
     let manager = service::manager(base);
     let result = match action {
         "install" => manager.install(true),
+        "reinstall" => manager.reinstall(),
         "uninstall" => manager.uninstall(true),
         "start" => manager.start(),
         "stop" => manager.stop(),
@@ -406,16 +421,10 @@ fn run_command(base: std::path::PathBuf) -> i32 {
     };
 
     // 面板账号首次初始化（对齐 Pek.RAgent：默认 admin/admin，面板横幅提示改密）
-    if proxy.server_config().web_password_hash.is_empty() {
-        let patch = ServerPatch {
-            password: Some("admin".to_string()),
-            user_name: Some("admin".to_string()),
-            ..Default::default()
-        };
-        match proxy.update_server(patch) {
-            Ok(_) => dhrust::warn!("面板账号已初始化为 admin/admin —— 请尽快在「设置」里改密"),
-            Err(e) => dhrust::warn!("面板账号初始化失败：{e}"),
-        }
+    match proxy.ensure_default_account() {
+        Ok(true) => dhrust::warn!("面板账号已初始化为 admin/admin —— 请尽快在「设置」里改密"),
+        Ok(false) => {}
+        Err(e) => dhrust::error!("面板账号初始化失败：{e}"),
     }
 
     // 自升级：Update/ 目录热检测（覆盖即升级）
@@ -519,10 +528,18 @@ fn run_command(base: std::path::PathBuf) -> i32 {
         }));
     }
 
-    // 主线程常驻（监听在独立线程里跑；服务停止时由 SCM / systemd 终止）
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
+    // 主线程常驻（监听在独立线程里跑）；服务模式下收到 SCM Stop/Shutdown 时置位退出。
+    while !SHUTDOWN.load(std::sync::atomic::Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
+    dhrust::info!("收到停止信号，正在退出");
+    if let Ok(mut guard) = slot.lock()
+        && let Some(listener) = guard.take()
+    {
+        listener.shutdown();
+    }
+    dhrust::logs::flush();
+    0
 }
 
 /// 绑定地址：允许远程时绑通配地址，否则只绑回环。
