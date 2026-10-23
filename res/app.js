@@ -584,10 +584,10 @@ function renderFields() {
     </h2>
     <div class="form-desc">
       按 <b>数据源 + 列名</b> 管控 <span class="font-mono">/Db/Query</span> 返回的列：
-      <b>拒绝</b> 的列任何情况下都不返回（连 <span class="font-mono">SELECT *</span> 也拿不到，结果集里直接没有这一列）；
+      <b>拒绝</b> 的列任何情况下都不返回（连 <span class="font-mono">SELECT *</span> 也拿不到）；
       <b>掩码</b> 保留列、值变 <span class="font-mono">***</span>。
-      <b>默认强制（enforce）：未登记列不放行</b>；需要先观察时切到学习模式（只记审计）。
-      尚未登记任何规则时不拦截（等于未启用）。
+      <b>未登记列默认不返回</b>（默认强制模式）；需要先观察时切到学习模式（只记审计）。
+      建议：先跑一次业务查询，再到下方「未登记字段」一键允许，然后逐项把敏感列改为拒绝/掩码。
     </div>
     <div class="flex-between" style="margin:14px 0">
       <span class="badge ${enforce ? 'badge-red' : 'badge-gray'}">当前模式：${enforce ? '强制 enforce（未登记列不返回）' : '学习 audit（只记录）'}</span>
@@ -597,7 +597,7 @@ function renderFields() {
     </div>`;
 
   if (!rules.length) {
-    html += `<div class="empty-state"><div class="empty-icon">🛡</div><div>还没有规则 —— 未登记任何规则时<b>不拦截</b>；登记后，未登记的列默认<b>不放行</b>（强制模式）</div></div>`;
+    html += `<div class="empty-state"><div class="empty-icon">🛡</div><div>还没有规则 —— <b>未登记的列一律不返回</b>；先跑一次查询，再到下方「未登记字段」一键允许</div></div>`;
   } else {
     html += `<table class="svc-table">
       <thead><tr><th>数据源</th><th>列名</th><th>动作</th><th>备注</th><th style="width:150px">操作</th></tr></thead><tbody>`;
@@ -618,7 +618,12 @@ function renderFields() {
   html += `</div>`;
 
   html += `<div class="card glass-card">
-    <h2>🔍 未登记字段（查询返回过、但没登记策略的列）</h2>`;
+    <h2>🔍 未登记字段（查询返回过、但没登记策略的列）
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="allowAllUnknown()">一键允许全部</button>
+        <button class="btn btn-secondary btn-sm" onclick="loadFields()">刷新</button>
+      </span>
+    </h2>`;
 
   if (!unknown.length) {
     html += `<div class="empty-state"><div class="empty-icon">🔍</div><div>暂无 —— 项目跑过查询后，这里会列出未登记的列</div></div>`;
@@ -698,9 +703,28 @@ async function removeFieldRule(db, column) {
 async function toggleFieldMode(toEnforce) {
   try {
     unwrap(await api('/api/fields/mode', { method: 'POST', body: JSON.stringify({ mode: toEnforce ? 'enforce' : 'audit' }) }));
-    toast(toEnforce ? '已切到强制模式：未登记列不再返回' : '已切回学习模式', 'success');
+    toast(toEnforce ? '已切到强制模式：未登记列不再返回' : '已切回学习模式（只记审计）', 'success');
     await loadFields(true);
   } catch (e) { toast(e.message, 'error'); }
+}
+
+/* 白名单初始化：把审计里观测到的未登记列批量登记为允许（之后逐项收紧） */
+async function allowAllUnknown() {
+  const dbs = Object.keys((fields && fields.unknown) || {});
+  if (!dbs.length) { toast('暂无未登记字段（先跑一次业务查询）', 'info'); return; }
+  if (!confirm('把当前所有未登记字段登记为「允许」？（之后可再逐项改为拒绝/掩码）')) return;
+  let total = 0;
+  for (const db of dbs) {
+    try {
+      const r = unwrap(await api('/api/fields/bulk', {
+        method: 'POST',
+        body: JSON.stringify({ db, action: 'allow', note: '白名单初始化' }),
+      }));
+      total += (r && r.count) || 0;
+    } catch (e) { toast(e.message, 'error'); }
+  }
+  toast(`已登记 ${total} 个列`, 'success');
+  await loadFields(true);
 }
 
 /* ── 用户（仅内置管理员可见）───────────────────────────── */

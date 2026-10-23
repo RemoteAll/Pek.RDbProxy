@@ -785,11 +785,6 @@ impl Proxy {
     ) -> (pek_rcode::session::RowSet, String) {
         use crate::policy::Action;
         let policy = self.policy_snapshot();
-        // 空策略（从未配置）＝ 未启用表管理，不做任何裁剪——否则一装上就“所有列消失”。
-        // 一旦登记任意一条规则，就按当前模式严格执行（默认 enforce：未登记列不放行）。
-        if policy.rules.is_empty() {
-            return (set, String::new());
-        }
         let mut keep: Vec<usize> = Vec::with_capacity(set.columns.len());
         let mut masks: Vec<usize> = Vec::new();
         let mut unknown: Vec<String> = Vec::new();

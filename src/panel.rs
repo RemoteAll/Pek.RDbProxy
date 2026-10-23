@@ -69,6 +69,7 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     router.map_post("/api/fields", guard(Arc::clone(&proxy), "fields", save_field));
     router.map_post("/api/fields/delete", guard(Arc::clone(&proxy), "fields", delete_field));
     router.map_post("/api/fields/mode", guard(Arc::clone(&proxy), "fields", set_field_mode));
+    router.map_post("/api/fields/bulk", guard(Arc::clone(&proxy), "fields", bulk_fields));
     // 用户管理：仅内置管理员（`users` 不在可授予权限表里，表内用户永远拿不到）
     router.map_get("/api/users", guard(Arc::clone(&proxy), crate::admin::PERM_USERS, list_users));
     router.map_post("/api/user", guard(Arc::clone(&proxy), crate::admin::PERM_USERS, save_user));
@@ -497,8 +498,59 @@ fn set_field_mode(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
     }
 }
 
-// ————— 面板用户（仅内置管理员；`users` 不在可授予权限表内） —————
+/// `POST /api/fields/bulk`：批量登记（同数据源、同动作）。
+///
+/// `columns` 为空时取「审计里观测到的未登记列」（`UnknownFields`）——
+/// 白名单模式（未登记列默认不返回）下用它一键初始化 `allow`。
+fn bulk_fields(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    let body = json_body(ctx);
+    let db = text(&body, "db");
+    let action = crate::policy::Action::parse(&text(&body, "action"));
+    let note = text(&body, "note");
+    if db.is_empty() {
+        return fail(400, "数据源不能为空");
+    }
+    let mut columns: Vec<String> = body
+        .get("columns")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if columns.is_empty() {
+        columns = proxy
+            .unknown_fields()
+            .get(&db)
+            .map(|map| map.keys().cloned().collect())
+            .unwrap_or_default();
+    }
+    if columns.is_empty() {
+        return fail(400, "没有可登记的列（先跑一次查询，或显式传 columns）");
+    }
+    let count = columns.len();
+    let mut policy = proxy.policy_snapshot();
+    for column in columns {
+        policy.upsert(crate::policy::Rule {
+            db: db.clone(),
+            column,
+            action,
+            note: note.clone(),
+        });
+    }
+    match proxy.save_policy(policy) {
+        Ok(()) => {
+            dhrust::info!("字段策略批量登记：db={db} action={} 共 {count} 列", action.as_str());
+            ok(json!({ "count": count }))
+        }
+        Err(e) => fail(500, &e),
+    }
+}
 
+// ————— 面板用户（仅内置管理员；`users` 不在可授予权限表内） —————
 /// `GET /api/users`：用户列表 + 可授权限（内置管理员以虚拟条目展示）。
 fn list_users(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
     let mut data = match crate::admin::list_users_json(proxy.base()) {
