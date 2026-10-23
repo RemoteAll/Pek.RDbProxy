@@ -12,13 +12,33 @@ use std::sync::Arc;
 use dhrust::net::http::{HttpOutcome, HttpResponse};
 use dhrust::net::panel_auth::{AuthLevel, bearer_token, client_ip, is_loopback};
 use dhrust::net::router::{Ctx, Router, route};
+use dhrust::net::static_files::StaticFiles;
 use serde_json::{Map, Value, json};
 
 use crate::config::DatabaseSection;
 use crate::proxy::Proxy;
 
-/// 面板页面（单文件 HTML，无外部依赖）。
-pub const INDEX_HTML: &str = include_str!("../res/index.html");
+/// 面板静态资源（与 Pek.RAgent 同一套 `web/` 结构：骨架 HTML + app.css + app.js）。
+fn statics() -> StaticFiles {
+    StaticFiles::new("wwwroot")
+        .embed(
+            "/index.html",
+            include_bytes!("../res/index.html"),
+            "text/html; charset=utf-8",
+        )
+        .embed(
+            "/assets/app.css",
+            include_bytes!("../res/app.css"),
+            "text/css; charset=utf-8",
+        )
+        .embed(
+            "/assets/app.js",
+            include_bytes!("../res/app.js"),
+            "application/javascript; charset=utf-8",
+        )
+        .spa_fallback(true)
+        .spa_excludes(&["/api", "/Db"])
+}
 
 /// 组装全部路由。
 pub fn build_router(proxy: Arc<Proxy>) -> Router {
@@ -30,11 +50,6 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     let waf = pek_rwaf::Waf::load_with_default(proxy.base(), waf_config);
     waf.set_forced_skip_bot_prefixes(vec!["/Db".to_string()]);
     router.use_middleware(waf.middleware());
-
-    // ── 面板页面
-    for path in ["/", "/index.html"] {
-        router.map_get(path, page());
-    }
 
     // ── 登录 / 登出（JWT）
     router.map_post("/api/login", login(Arc::clone(&proxy)));
@@ -52,21 +67,24 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     router.map_post("/Db/{action}", db_call(Arc::clone(&proxy), "POST"));
     router.map_get("/Db/{action}", db_call(Arc::clone(&proxy), "GET"));
 
-    router.fallback(route(|_ctx| async {
-        HttpOutcome::Response(fail(404, "未知路由"))
+    // 静态资源：GET/HEAD → 面板文件（ETag/304 + SPA 深链接回退）；其他方法只允许真实文件
+    let statics = statics();
+    router.fallback(route(move |ctx: Ctx| {
+        let statics = statics.clone();
+        async move {
+            let method_ok = ctx.req.method.eq_ignore_ascii_case("GET")
+                || ctx.req.method.eq_ignore_ascii_case("HEAD");
+            if method_ok {
+                if let Some(response) = statics.try_serve_request(&ctx.req) {
+                    return HttpOutcome::Response(response);
+                }
+            } else if let Some(response) = statics.try_serve_file(&ctx.req.path) {
+                return HttpOutcome::Response(response);
+            }
+            HttpOutcome::Response(fail(404, "未知路由"))
+        }
     }));
     router
-}
-
-/// 页面。
-fn page() -> dhrust::net::router::RouteHandler {
-    route(|_ctx: Ctx| async {
-        HttpOutcome::Response(HttpResponse::bytes(
-            200,
-            "text/html; charset=utf-8",
-            INDEX_HTML.as_bytes().to_vec(),
-        ))
-    })
 }
 
 /// 登录（用户名 + 密码 → JWT）。
@@ -154,6 +172,7 @@ fn status(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
         .map(source_json)
         .collect();
     ok(json!({
+        "version": crate::VERSION,
         "uptimeSecs": proxy.uptime_secs(),
         "server": {
             "host": server.host,

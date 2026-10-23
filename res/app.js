@@ -1,0 +1,529 @@
+/* Pek.RDbProxy 管理面板前端
+ * 结构与样式完全复用 Pek.RAgent 的 web/app.css（同一套类名与排版），
+ * 仅内容区按自身业务（数据源 / 审计 / 设置）渲染。
+ */
+
+const $ = (id) => document.getElementById(id);
+const TOKEN_KEY = 'rdbproxy_token';
+let token = '';
+let status = null;
+let pollTimer = null;
+
+/* ── 通用 ───────────────────────────────────────────── */
+
+function toast(msg, type = 'info') {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + type + ' show';
+  clearTimeout(t._tid);
+  t._tid = setTimeout(() => t.classList.remove('show'), 3500);
+}
+function showToast(msg, type) { toast(msg, type); }
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function fmtUptime(sec) {
+  sec = Math.max(0, sec | 0);
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (d) return `${d} 天 ${h} 小时`;
+  if (h) return `${h} 小时 ${m} 分`;
+  if (m) return `${m} 分 ${s} 秒`;
+  return `${s} 秒`;
+}
+function fmtUs(us) {
+  if (!us) return '0 µs';
+  if (us < 1000) return us + ' µs';
+  return (us / 1000).toFixed(2) + ' ms';
+}
+
+let _lastElapsed = '--';
+function setSrvElapsed(ms) {
+  _lastElapsed = ms;
+  const f = $('srv-foot');
+  if (f) f.textContent = `Pek.RDbProxy · 服务端处理耗时：${ms} ms（最近一次请求）`;
+}
+
+let _modalCb = null;
+function showModal(title, body, confirmText, cb) {
+  $('modal-title').textContent = title;
+  $('modal-body').innerHTML = body;
+  $('modal-confirm-btn').textContent = confirmText || '确认';
+  $('modal-overlay').classList.remove('hidden');
+  _modalCb = cb;
+}
+function closeModal() { $('modal-overlay').classList.add('hidden'); _modalCb = null; }
+function confirmModal() { const cb = _modalCb; closeModal(); if (cb) cb(); }
+
+/* ── 请求 ───────────────────────────────────────────── */
+
+async function api(url, opt = {}) {
+  const h = Object.assign({}, opt.headers || {});
+  if (token) h['Authorization'] = 'Bearer ' + token;
+  if (opt.body) h['Content-Type'] = 'application/json';
+  const r = await fetch(url, Object.assign({}, opt, { headers: h }));
+  const el = r.headers.get('X-Elapsed-Ms');
+  if (el) setSrvElapsed(el);
+  let j = null;
+  try { j = await r.json(); } catch (e) { j = { ok: false, message: '响应不是 JSON' }; }
+  if (r.status === 401) {
+    if ($('login').style.display !== 'none') {
+      // 登录页：交给调用方显示错误
+      throw new Error(j && j.message ? j.message : '用户名或密码错误');
+    }
+    logout();
+    toast('登录已过期，请重新登录', 'error');
+    throw new Error('Unauthorized');
+  }
+  return j;
+}
+
+function unwrap(j) {
+  if (j && j.ok) return j.data;
+  throw new Error((j && j.message) || '请求失败');
+}
+
+/* ── 登录 ───────────────────────────────────────────── */
+
+function readToken() {
+  const t = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || '';
+  return t;
+}
+function storeToken(t, remember) {
+  token = t;
+  try {
+    if (remember) { localStorage.setItem(TOKEN_KEY, t); sessionStorage.removeItem(TOKEN_KEY); }
+    else { sessionStorage.setItem(TOKEN_KEY, t); localStorage.removeItem(TOKEN_KEY); }
+  } catch (e) { /* 隐私模式忽略 */ }
+}
+function clearToken() {
+  token = '';
+  try { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+}
+
+async function doLogin() {
+  const user = $('luser').value.trim();
+  const pass = $('lpass').value;
+  const err = $('lerr');
+  err.classList.remove('show');
+  if (!user || !pass) { err.textContent = '请输入用户名与密码'; err.classList.add('show'); return; }
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, password: pass }),
+    });
+    const el = r.headers.get('X-Elapsed-Ms'); if (el) setSrvElapsed(el);
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error((j && j.message) || '登录失败');
+    storeToken(j.data.token, $('lremember').checked);
+    enterApp();
+  } catch (e) {
+    err.textContent = e.message || '登录失败';
+    err.classList.add('show');
+  }
+}
+
+function logout() {
+  clearToken();
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  $('app').style.display = 'none';
+  $('login').style.display = '';
+  $('lpass').value = '';
+}
+
+function enterApp() {
+  $('login').style.display = 'none';
+  $('app').style.display = 'block';
+  switchPanel(panelFromHash());
+  loadStatus();
+  if (pollTimer) clearInterval(pollTimer);
+  // 概览页 3 秒刷新（对齐 RAgent 面板节奏；其它页签进入时按需拉取）
+  pollTimer = setInterval(() => {
+    const cur = document.querySelector('nav a.active');
+    if (cur && cur.dataset.panel === 'overview') loadStatus(true);
+  }, 3000);
+}
+
+/* ── 页签 ───────────────────────────────────────────── */
+
+function panelFromHash() {
+  const h = (location.hash || '').replace('#', '');
+  return ['overview', 'audit', 'settings'].includes(h) ? h : 'overview';
+}
+
+function switchPanel(name) {
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  const link = document.querySelector(`nav a[data-panel="${name}"]`);
+  if (link) link.classList.add('active');
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  const panel = $('panel-' + name);
+  if (panel) panel.classList.add('active');
+  if (history.replaceState) history.replaceState(null, '', '#' + name);
+
+  const loaders = { overview: loadStatus, audit: loadAudit, settings: loadSettings };
+  if (loaders[name]) loaders[name]();
+}
+
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('nav a[data-panel]');
+  if (a) switchPanel(a.dataset.panel);
+});
+
+/* ── 概览：数据源 ───────────────────────────────────── */
+
+async function loadStatus(silent) {
+  try {
+    status = unwrap(await api('/api/status'));
+  } catch (e) {
+    if (!silent) toast(e.message, 'error');
+    return;
+  }
+  renderHeader();
+  renderBanner();
+  renderOverview();
+}
+
+function renderHeader() {
+  const s = status.server || {};
+  const meta = $('header-meta');
+  if (meta) {
+    meta.textContent = `v${status.version || '0.1.0'} · 运行 ${fmtUptime(status.uptimeSecs)} · ${s.allowRemote ? '允许远程' : '仅本机'}`;
+  }
+  const dot = $('status-dot-header');
+  if (dot) dot.title = `${s.host}:${s.port}`;
+}
+
+function renderBanner() {
+  const s = status.server || {};
+  const el = $('sec-banner');
+  if (!el) return;
+  if (s.defaultPassword) {
+    el.classList.remove('hidden');
+    el.textContent = '⚠ 面板仍在使用默认密码（admin/admin），请立即到「设置」修改'
+      + (s.allowRemote ? '；当前已允许远程访问，存在被扫描利用风险' : '');
+  } else {
+    el.classList.add('hidden');
+  }
+}
+
+function renderOverview() {
+  const sources = status.sources || [];
+  const readOnly = sources.filter(s => s.readOnly).length;
+  const reqs = sources.reduce((a, s) => a + (s.requests || 0), 0);
+  const fails = sources.reduce((a, s) => a + (s.failures || 0), 0);
+  const avg = (() => {
+    const tot = sources.reduce((a, s) => a + (s.requests || 0) * (s.avgUs || 0), 0);
+    return reqs ? Math.round(tot / reqs) : 0;
+  })();
+
+  let html = `
+  <div class="stats-grid mb-16">
+    <div class="stat"><div class="stat-val">${sources.length}</div><div class="stat-lbl">数据源</div></div>
+    <div class="stat"><div class="stat-val">${readOnly}</div><div class="stat-lbl">只读</div></div>
+    <div class="stat"><div class="stat-val">${reqs}</div><div class="stat-lbl">累计请求</div></div>
+    <div class="stat"><div class="stat-val ${fails ? 'text-red' : ''}">${fails}</div><div class="stat-lbl">失败</div></div>
+    <div class="stat"><div class="stat-val">${fmtUs(avg)}</div><div class="stat-lbl">平均耗时</div></div>
+  </div>
+
+  <div class="card glass-card">
+    <h2>🗄 数据源
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="editSource(null)">+ 新增数据源</button>
+        <button class="btn btn-secondary btn-sm" onclick="loadStatus()">刷新</button>
+      </span>
+    </h2>`;
+
+  if (!sources.length) {
+    html += `<div class="empty-state"><div class="empty-icon">🗄</div><div>还没有数据源，点「+ 新增数据源」添加</div></div>`;
+  } else {
+    html += `<div class="ds-grid">`;
+    for (const s of sources) {
+      const badge = s.available
+        ? '<span class="badge badge-green">可用</span>'
+        : `<span class="badge badge-red" title="${esc(s.error)}">不可用</span>`;
+      html += `<div class="glass-card ds-card">
+        <div class="flex-between" style="margin-bottom:10px">
+          <div style="min-width:0">
+            <div class="ds-name">${esc(s.name)}</div>
+            <div class="text-muted" style="font-size:11px;margin-top:2px">${esc(s.kind)}${s.description ? ' · ' + esc(s.description) : ''}</div>
+          </div>
+          ${badge}
+        </div>
+        <table class="info-table">
+          <tr><td>令牌</td><td>${s.tokenSet ? '<span class="badge badge-green">已设置</span>' : '<span class="badge badge-red">未设置</span>'}</td></tr>
+          <tr><td>模式</td><td>${s.readOnly ? '<span class="badge badge-gray">只读</span>' : '<span class="badge badge-green">可写</span>'}</td></tr>
+          <tr><td>请求</td><td class="font-mono">${s.requests || 0} 次 · 失败 <span class="${s.failures ? 'text-red' : ''}">${s.failures || 0}</span> · 平均 ${fmtUs(s.avgUs)}</td></tr>
+        </table>
+        <div class="ds-conn">${esc(s.connection)}</div>
+        <div class="ds-actions">
+          <button class="btn btn-secondary btn-sm" onclick="editSource('${esc(s.name)}')">编辑</button>
+          <button class="btn btn-ghost btn-sm" onclick="toggleReadOnly('${esc(s.name)}', ${!s.readOnly})">${s.readOnly ? '解除只读' : '设为只读'}</button>
+          <button class="btn btn-ghost btn-sm text-red" onclick="removeSource('${esc(s.name)}')">删除</button>
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  html += `</div>`;
+
+  const port = (status.server || {}).port || 5599;
+  html += `<div class="card glass-card">
+    <h2>📌 项目侧连接串</h2>
+    <div class="log-content" style="max-height:none">
+Server=http://127.0.0.1:${port};Database=&lt;Name&gt;;Password=&lt;Token&gt;;provider=network</div>
+    <div class="form-desc mt-12">项目里只放这一行，真实账号密码只保存在本机 Config/Proxy.toml；令牌在「编辑数据源」里查看或重新生成。</div>
+  </div>`;
+
+  $('panel-overview').innerHTML = html;
+}
+
+/* ── 数据源：增删改 ─────────────────────────────────── */
+
+function findSource(name) {
+  return (status && status.sources ? status.sources : []).find(s => s.name === name);
+}
+
+function editSource(name) {
+  const s = name ? findSource(name) : null;
+  const title = s ? '编辑数据源：' + s.name : '新增数据源';
+  const body = `
+    <div class="form-group">
+      <label>名称（项目侧 Database=）</label>
+      <input type="text" id="f-name" value="${esc(s ? s.name : '')}" ${s ? 'disabled' : ''}
+             placeholder="例如 demo / biz / report">
+      <div class="form-desc">${s ? '名称是项目侧连接串里的 Database，创建后不可改' : '只用字母数字与 _-，区分业务库'}</div>
+    </div>
+    <div class="form-group">
+      <label>连接串（Pek.RCode 格式，支持 enc:v1: 加密值）</label>
+      <textarea id="f-conn" rows="3" placeholder="${s ? '（留空 = 不改）' : 'Server=127.0.0.1;Port=3306;Database=app;Uid=root;Pwd=xxx;provider=mysql'}">${s ? '' : ''}</textarea>
+      <div class="form-desc">${s ? '当前：' + esc(s.connection) : 'SQLite 示例：Data Source=Data/demo.db;Provider=SQLite'}</div>
+    </div>
+    <div class="form-group">
+      <label>令牌（项目侧 Password=）</label>
+      <input type="text" id="f-token" value="" placeholder="${s ? '（留空 = 不改）' : '（留空 = 自动生成）'}">
+      <div class="form-desc">令牌只授权访问本数据源，泄露也不会暴露真实数据库账号</div>
+    </div>
+    <div class="form-group">
+      <label>备注</label>
+      <input type="text" id="f-desc" value="${esc(s ? s.description : '')}" placeholder="用途说明（可选）">
+    </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:10px;margin-bottom:0">
+      <label style="margin:0">只读模式（拒绝一切写操作）</label>
+      <label class="toggle" style="margin-left:auto">
+        <input type="checkbox" id="f-ro" ${!s || s.readOnly ? 'checked' : ''}><span class="track"><span class="thumb"></span></span>
+      </label>
+    </div>`;
+  showModal(title, body, '保存', async () => {
+    const payload = {
+      name: ($('f-name').value || '').trim(),
+      connection: ($('f-conn').value || '').trim(),
+      token: ($('f-token').value || '').trim(),
+      description: ($('f-desc').value || '').trim(),
+      readOnly: $('f-ro').checked,
+    };
+    try {
+      unwrap(await api('/api/datasource', { method: 'POST', body: JSON.stringify(payload) }));
+      toast('已保存', 'success');
+      loadStatus();
+      if (panelFromHash() === 'audit') loadAudit();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+function removeSource(name) {
+  showModal('删除数据源', `确定删除 <b>${esc(name)}</b> 吗？<br>删除后项目侧用该名称的连接串立即失效。`, '删除', async () => {
+    try {
+      unwrap(await api('/api/datasource/delete', { method: 'POST', body: JSON.stringify({ name }) }));
+      toast('已删除', 'success');
+      loadStatus();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+async function toggleReadOnly(name, readOnly) {
+  try {
+    unwrap(await api('/api/readonly', { method: 'POST', body: JSON.stringify({ db: name, readOnly }) }));
+    toast(readOnly ? '已设为只读' : '已解除只读（允许写操作）', readOnly ? 'success' : 'info');
+    loadStatus();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+/* ── 审计 ───────────────────────────────────────────── */
+
+async function loadAudit() {
+  const n = 100;
+  let rows = [];
+  try {
+    rows = unwrap(await api('/api/audit?n=' + n)) || [];
+  } catch (e) { toast(e.message, 'error'); return; }
+
+  let html = `<div class="card glass-card">
+    <h2>📋 SQL 审计
+      <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <select id="audit-n" onchange="loadAudit()" style="margin:0">
+          <option value="50">最近 50</option>
+          <option value="100" selected>最近 100</option>
+          <option value="300">最近 300</option>
+          <option value="500">最近 500</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="loadAudit()">刷新</button>
+      </span>
+    </h2>`;
+  if (!rows.length) {
+    html += `<div class="empty-state"><div class="empty-icon">📋</div><div>暂无记录（项目侧调用 /Db 后在此显示）</div></div>`;
+  } else {
+    html += `<table class="svc-table"><thead><tr>
+      <th>时间</th><th>数据源</th><th>操作</th><th>结果</th><th>耗时</th><th>行数</th><th>令牌</th><th>SQL / 错误</th>
+      </tr></thead><tbody>`;
+    for (const r of rows) {
+      html += `<tr>
+        <td class="font-mono" style="white-space:nowrap">${esc(r.at)}</td>
+        <td>${esc(r.db)}</td>
+        <td>${esc(r.op)}</td>
+        <td>${r.ok ? '<span class="badge badge-green">成功</span>' : '<span class="badge badge-red">失败</span>'}</td>
+        <td class="font-mono" style="white-space:nowrap">${fmtUs(r.micros)}</td>
+        <td class="font-mono">${r.rows}</td>
+        <td class="font-mono text-muted">${esc(r.token || '—')}</td>
+        <td class="font-mono" style="word-break:break-all;max-width:520px">${esc(r.error || r.sql || '—')}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+  }
+  html += '</div>';
+  $('panel-audit').innerHTML = html;
+  const sel = $('audit-n');
+  if (sel && n) sel.value = String(Math.min(500, Math.max(50, n)));
+}
+
+/* ── 设置 ───────────────────────────────────────────── */
+
+function loadSettings() {
+  if (!status) { loadStatus().then(loadSettings); return; }
+  const s = status.server || {};
+  const levels = [
+    ['None', 'None（不鉴权，仅适合完全内网）'],
+    ['LocalOnly', 'LocalOnly（本机免登录，远程需登录）'],
+    ['Full', 'Full（所有访问都需登录）'],
+  ];
+  const html = `
+  <div class="card glass-card">
+    <h2>⚙ 服务端设置</h2>
+    <table class="config-table">
+      <tr>
+        <td>监听端口</td>
+        <td><input type="number" id="s-port" value="${esc(s.port)}" min="1" max="65535" style="width:140px"></td>
+        <td>当前 ${esc(s.host)}:${esc(s.port)}；端口修改后需重启服务生效</td>
+      </tr>
+      <tr>
+        <td>允许远程访问</td>
+        <td>
+          <label class="toggle">
+            <input type="checkbox" id="s-remote" ${s.allowRemote ? 'checked' : ''}><span class="track"><span class="thumb"></span></span>
+          </label>
+        </td>
+        <td>关闭时只接受本机回环请求；开启后注意防火墙与鉴权级别</td>
+      </tr>
+      <tr>
+        <td>面板鉴权级别</td>
+        <td>
+          <select id="s-level" style="width:100%;max-width:420px">
+            ${levels.map(([v, t]) => `<option value="${v}" ${s.webAuthLevel === v ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </td>
+        <td>对齐 Pek.RAgent：None / LocalOnly / Full</td>
+      </tr>
+      <tr>
+        <td>面板用户名</td>
+        <td><input type="text" id="s-user" value="${esc(s.webUserName)}" style="width:200px"></td>
+        <td>保存后立即生效</td>
+      </tr>
+      <tr>
+        <td>面板新密码</td>
+        <td><input type="password" id="s-pass" placeholder="（留空 = 不改）" style="width:200px"></td>
+        <td>留空表示保持现有密码不变</td>
+      </tr>
+      <tr>
+        <td></td>
+        <td colspan="2"><button class="btn btn-primary btn-sm" onclick="saveSettings()">保存设置</button></td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="card glass-card">
+    <h2>ℹ 运行信息</h2>
+    <table class="info-table">
+      <tr><td>程序</td><td>Pek.RDbProxy v${esc(status.version || '0.1.0')}</td></tr>
+      <tr><td>运行时长</td><td>${fmtUptime(status.uptimeSecs)}</td></tr>
+      <tr><td>数据源</td><td>${(status.sources || []).length} 个（${(status.sources || []).map(x => esc(x.name)).join('、') || '—'}）</td></tr>
+      <tr><td>配置文件</td><td class="font-mono">Config/Proxy.toml（真实连接串只在本机）</td></tr>
+      <tr><td>升级方式</td><td>把新程序放入 Update/ 目录，10 秒后自动替换并重启</td></tr>
+    </table>
+  </div>`;
+  $('panel-settings').innerHTML = html;
+}
+
+async function saveSettings() {
+  const payload = {
+    port: parseInt($('s-port').value, 10) || undefined,
+    allowRemote: $('s-remote').checked,
+    authLevel: $('s-level').value,
+    userName: ($('s-user').value || '').trim(),
+    password: ($('s-pass').value || '').trim(),
+  };
+  try {
+    const r = unwrap(await api('/api/server', { method: 'POST', body: JSON.stringify(payload) }));
+    if (r.restartRequired) toast('已保存；端口变更需重启服务后生效', 'info');
+    else toast('已保存', 'success');
+    loadStatus();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+/* ── 主题 ───────────────────────────────────────────── */
+
+function toggleTheme() {
+  const cur = document.documentElement.classList.contains('light') ? 'light' : 'dark';
+  const next = cur === 'light' ? 'dark' : 'light';
+  document.documentElement.classList.toggle('light', next === 'light');
+  try { localStorage.setItem('rdbproxy_theme', next); } catch (e) {}
+}
+
+(function init() {
+  // 局部样式：本面板表格列较多，避免徽章被挤成两行（沿用 app.css 的配色与尺寸，仅补 nowrap）
+  const st = document.createElement('style');
+  st.textContent = `
+.svc-table .badge{white-space:nowrap}
+.ds-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(370px,1fr));gap:14px}
+.ds-card{padding:16px 18px;margin-bottom:0;display:flex;flex-direction:column}
+.ds-name{font-size:15px;font-weight:700;letter-spacing:-0.01em}
+.ds-card .info-table td{padding:5px 0;font-size:12px;border-bottom:1px solid var(--border-subtle);width:auto}
+.ds-card .info-table td:first-child{width:56px;padding-right:10px;font-size:11px;font-weight:600;color:var(--text-tertiary)}
+.ds-card .info-table tr:last-child td{border-bottom:none}
+.ds-conn{margin-top:10px;padding:7px 10px;border-radius:var(--radius-sm);background:var(--surface-2);
+  font-family:var(--font-mono);font-size:11px;color:var(--text-muted);word-break:break-all;line-height:1.5}
+.ds-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+`;
+  document.head.appendChild(st);
+
+  try {
+    // 默认浅色（与 Pek 系面板一致）；显式选过深色才移除 light
+    if (localStorage.getItem('rdbproxy_theme') === 'dark') {
+      document.documentElement.classList.remove('light');
+    }
+  } catch (e) {}
+  token = readToken();
+  $('lpass').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+  $('luser').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('lpass').focus(); });
+  if (token) {
+    // 有令牌：先验一次（LocalOnly 下即使无令牌也放行，status 会成功）
+    enterApp();
+  } else {
+    // 本地回环且鉴权 LocalOnly 时免登录：探测 status
+    fetch('/api/status').then(r => r.json()).then(j => {
+      if (j && j.ok) { enterApp(); }
+    }).catch(() => {});
+  }
+})();
