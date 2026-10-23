@@ -22,3 +22,7 @@ Config/.key
 /dist-*
 *.zip
 *.tar.gz
+
+# C# 校验工具（tools/）的编译产物与 NuGet 缓存，一律不入库
+/tools/**/bin/
+/tools/**/obj/
