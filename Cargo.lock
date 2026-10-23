@@ -1454,6 +1454,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pek-radmin"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dhrust",
+ "pek-rcode",
+ "serde_json",
+]
+
+[[package]]
 name = "pek-rcode"
 version = "0.1.0"
 dependencies = [
@@ -1483,10 +1493,11 @@ dependencies = [
 
 [[package]]
 name = "pek-rdbproxy"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "chrono",
  "dhrust",
+ "pek-radmin",
  "pek-rcode",
  "pek-rpermissions",
  "pek-rwaf",

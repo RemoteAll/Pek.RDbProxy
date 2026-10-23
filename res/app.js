@@ -7,6 +7,9 @@ const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = 'rdbproxy_token';
 let token = '';
 let status = null;
+let fields = null;
+let me = null;
+let usersData = null;
 let pollTimer = null;
 
 /* ── 通用 ───────────────────────────────────────────── */
@@ -131,7 +134,8 @@ async function doLogin() {
           <button class="btn btn-primary btn-sm" onclick="navigator.clipboard.writeText('${esc(pwd)}')">复制新密码</button>
         </div>`,
         '我已保存', null);
-    } catch (e) {
+    }
+  } catch (e) {
     err.textContent = e.message || '登录失败';
     err.classList.add('show');
   }
@@ -148,7 +152,7 @@ function logout() {
 function enterApp() {
   $('login').style.display = 'none';
   $('app').style.display = 'block';
-  switchPanel(panelFromHash());
+  loadMe().then(() => switchPanel(panelFromHash()));
   loadStatus();
   if (pollTimer) clearInterval(pollTimer);
   // 概览页 3 秒刷新（对齐 RAgent 面板节奏；其它页签进入时按需拉取）
@@ -162,10 +166,40 @@ function enterApp() {
 
 function panelFromHash() {
   const h = (location.hash || '').replace('#', '');
-  return ['overview', 'audit', 'settings'].includes(h) ? h : 'overview';
+  return ['overview', 'audit', 'fields', 'users', 'settings'].includes(h) ? h : 'overview';
+}
+
+function canPerm(perm) {
+  if (!me) return true;
+  if (me.builtin) return true;
+  return (me.permissions || []).includes(perm);
+}
+
+function panelAllowed(name) {
+  if (!me) return true;
+  if (me.builtin) return true;
+  if (name === 'users') return false;
+  return (me.permissions || []).includes(name);
+}
+
+function renderNav() {
+  document.querySelectorAll('nav a[data-panel]').forEach(a => {
+    a.style.display = panelAllowed(a.dataset.panel) ? '' : 'none';
+  });
+  const cur = document.querySelector('nav a.active');
+  if (cur && cur.style.display === 'none') {
+    const first = [...document.querySelectorAll('nav a[data-panel]')].find(a => a.style.display !== 'none');
+    if (first) switchPanel(first.dataset.panel);
+  }
+}
+
+async function loadMe() {
+  try { me = unwrap(await api('/api/me')); } catch (e) { me = null; }
+  renderNav();
 }
 
 function switchPanel(name) {
+  if (!panelAllowed(name)) name = 'overview';
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   const link = document.querySelector(`nav a[data-panel="${name}"]`);
   if (link) link.classList.add('active');
@@ -174,7 +208,7 @@ function switchPanel(name) {
   if (panel) panel.classList.add('active');
   if (history.replaceState) history.replaceState(null, '', '#' + name);
 
-  const loaders = { overview: loadStatus, audit: loadAudit, settings: loadSettings };
+  const loaders = { overview: loadStatus, audit: loadAudit, fields: loadFields, users: loadUsers, settings: loadSettings };
   if (loaders[name]) loaders[name]();
 }
 
@@ -514,6 +548,271 @@ async function copyProjectConn(name) {
   } catch (e) { toast(e.message || '获取令牌失败', 'error'); }
 }
 
+/* ── 字段安全（表管理 / 列策略）───────────────────────── */
+
+const FIELD_ACTION_LABEL = { allow: '允许', mask: '掩码', deny: '拒绝' };
+
+async function loadFields(silent) {
+  try {
+    fields = unwrap(await api('/api/fields'));
+    if (!status) {
+      try { status = unwrap(await api('/api/status')); } catch (e) { /* 下拉空缺即可 */ }
+    }
+  } catch (e) {
+    if (!silent) toast(e.message, 'error');
+    return;
+  }
+  renderFields();
+}
+
+function renderFields() {
+  const d = fields || { mode: 'audit', rules: [], unknown: {} };
+  const enforce = d.mode === 'enforce';
+  const rules = d.rules || [];
+  const unknown = [];
+  Object.keys(d.unknown || {}).forEach(db => {
+    Object.keys(d.unknown[db] || {}).forEach(col => unknown.push({ db, column: col, count: d.unknown[db][col] }));
+  });
+
+  let html = `
+  <div class="card glass-card">
+    <h2>🛡 字段安全（表管理）
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="editFieldRule(null)">+ 新增规则</button>
+        <button class="btn btn-secondary btn-sm" onclick="loadFields()">刷新</button>
+      </span>
+    </h2>
+    <div class="form-desc">
+      按 <b>数据源 + 列名</b> 管控 <span class="font-mono">/Db/Query</span> 返回的列：
+      <b>拒绝</b> 的列任何情况下都不返回（连 <span class="font-mono">SELECT *</span> 也拿不到，结果集里直接没有这一列）；
+      未登记字段在 <b>学习</b> 模式只记审计、在 <b>强制</b> 模式不返回。
+    </div>
+    <div class="flex-between" style="margin:14px 0">
+      <span class="badge ${enforce ? 'badge-red' : 'badge-gray'}">当前模式：${enforce ? '强制 enforce（未登记列不返回）' : '学习 audit（只记录）'}</span>
+      <button class="btn btn-secondary btn-sm" onclick="toggleFieldMode(${enforce ? 'false' : 'true'})">
+        ${enforce ? '切回学习模式' : '切换到强制模式'}
+      </button>
+    </div>`;
+
+  if (!rules.length) {
+    html += `<div class="empty-state"><div class="empty-icon">🛡</div><div>还没有规则 —— 点「+ 新增规则」把不该返回的列登记为<b>拒绝</b></div></div>`;
+  } else {
+    html += `<table class="svc-table">
+      <thead><tr><th>数据源</th><th>列名</th><th>动作</th><th>备注</th><th style="width:150px">操作</th></tr></thead><tbody>`;
+    for (const r of rules) {
+      const cls = r.action === 'allow' ? 'badge-green' : (r.action === 'mask' ? 'badge-gray' : 'badge-red');
+      html += `<tr>
+        <td class="font-mono">${esc(r.db)}</td>
+        <td class="font-mono">${esc(r.column)}</td>
+        <td><span class="badge ${cls}">${FIELD_ACTION_LABEL[r.action] || esc(r.action)}</span></td>
+        <td class="text-muted">${esc(r.note)}</td>
+        <td><div class="svc-actions">
+          <button class="btn btn-ghost btn-sm" onclick="editFieldRule('${esc(r.db)}','${esc(r.column)}')">编辑</button>
+          <button class="btn btn-ghost btn-sm text-red" onclick="removeFieldRule('${esc(r.db)}','${esc(r.column)}')">删除</button>
+        </div></td></tr>`;
+    }
+    html += '</tbody></table>';
+  }
+  html += `</div>`;
+
+  html += `<div class="card glass-card">
+    <h2>🔍 未登记字段（查询返回过、但没登记策略的列）</h2>`;
+
+  if (!unknown.length) {
+    html += `<div class="empty-state"><div class="empty-icon">🔍</div><div>暂无 —— 项目跑过查询后，这里会列出未登记的列</div></div>`;
+  } else {
+    html += `<table class="svc-table">
+      <thead><tr><th>数据源</th><th>列名</th><th>出现次数</th><th style="width:200px">快速登记</th></tr></thead><tbody>`;
+    for (const u of unknown) {
+      html += `<tr>
+        <td class="font-mono">${esc(u.db)}</td>
+        <td class="font-mono">${esc(u.column)}</td>
+        <td>${u.count}</td>
+        <td><div class="svc-actions">
+          <button class="btn btn-ghost btn-sm" onclick="quickFieldRule('${esc(u.db)}','${esc(u.column)}','allow')">允许</button>
+          <button class="btn btn-ghost btn-sm text-red" onclick="quickFieldRule('${esc(u.db)}','${esc(u.column)}','deny')">拒绝</button>
+        </div></td></tr>`;
+    }
+    html += '</tbody></table>';
+  }
+  html += `</div>`;
+
+  $('panel-fields').innerHTML = html;
+}
+
+function editFieldRule(db, column) {
+  const rules = (fields && fields.rules) || [];
+  const cur = rules.find(r => r.db === db && r.column === column)
+    || { db: db || '', column: column || '', action: 'deny', note: '' };
+  const names = ((status && status.sources) || []).map(s => s.name);
+  const opts = names.map(n => `<option value="${esc(n)}"${n === cur.db ? ' selected' : ''}>${esc(n)}</option>`).join('')
+    || '<option value="">（先添加数据源）</option>';
+  showModal(db ? '编辑列策略' : '新增列策略', `
+    <label>数据源</label>
+    <select id="f-db" style="margin-bottom:10px">${opts}</select>
+    <label>列名（大小写不敏感）</label>
+    <input type="text" id="f-column" value="${esc(cur.column)}" placeholder="例如 password / mobile" style="margin-bottom:10px">
+    <label>动作</label>
+    <select id="f-action" style="margin-bottom:10px">
+      <option value="deny"${cur.action === 'deny' ? ' selected' : ''}>拒绝（永不返回，连 SELECT * 也拿不到）</option>
+      <option value="mask"${cur.action === 'mask' ? ' selected' : ''}>掩码（当前实现等同不返回）</option>
+      <option value="allow"${cur.action === 'allow' ? ' selected' : ''}>允许（显式放行）</option>
+    </select>
+    <label>备注</label>
+    <input type="text" id="f-note" value="${esc(cur.note)}" placeholder="用途说明，可空">
+  `, '保存', async () => {
+    const body = {
+      db: $('f-db').value.trim(),
+      column: $('f-column').value.trim(),
+      action: $('f-action').value,
+      note: $('f-note').value.trim(),
+    };
+    if (!body.db || !body.column) { toast('数据源与列名不能为空', 'error'); return; }
+    try {
+      unwrap(await api('/api/fields', { method: 'POST', body: JSON.stringify(body) }));
+      toast('已保存', 'success');
+      await loadFields(true);
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+async function quickFieldRule(db, column, action) {
+  try {
+    unwrap(await api('/api/fields', { method: 'POST', body: JSON.stringify({ db, column, action, note: '' }) }));
+    toast(action === 'deny' ? `已登记为拒绝：${column}` : `已登记为允许：${column}`, 'success');
+    await loadFields(true);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function removeFieldRule(db, column) {
+  if (!confirm(`删除规则 ${db}.${column}？`)) return;
+  try {
+    unwrap(await api('/api/fields/delete', { method: 'POST', body: JSON.stringify({ db, column }) }));
+    toast('已删除', 'success');
+    await loadFields(true);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function toggleFieldMode(toEnforce) {
+  try {
+    unwrap(await api('/api/fields/mode', { method: 'POST', body: JSON.stringify({ mode: toEnforce ? 'enforce' : 'audit' }) }));
+    toast(toEnforce ? '已切到强制模式：未登记列不再返回' : '已切回学习模式', 'success');
+    await loadFields(true);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+/* ── 用户（仅内置管理员可见）───────────────────────────── */
+
+async function loadUsers(silent) {
+  try {
+    usersData = unwrap(await api('/api/users'));
+    if (!status) {
+      try { status = unwrap(await api('/api/status')); } catch (e) { /* 忽略 */ }
+    }
+  } catch (e) {
+    if (!silent) toast(e.message, 'error');
+    return;
+  }
+  renderUsers();
+}
+
+function permName(key) {
+  const list = (usersData && usersData.permissions) || [];
+  const hit = list.find(p => p.key === key || p.name === key);
+  return hit ? (hit.name || key) : key;
+}
+
+function renderUsers() {
+  const d = usersData || { users: [], permissions: [] };
+  const rows = [];
+  if (d.builtinAdmin) rows.push(Object.assign({ builtin: true }, d.builtinAdmin));
+  (d.users || []).forEach(u => rows.push(u));
+
+  let html = `<div class="card glass-card">
+    <h2>👥 面板用户
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="editUser(null)">+ 新增用户</button>
+        <button class="btn btn-secondary btn-sm" onclick="loadUsers()">刷新</button>
+      </span>
+    </h2>
+    <div class="form-desc">
+      内置管理员来自 <span class="font-mono">Config/Proxy.toml</span>（用户名/密码在「⚙ 设置」里改，恒有全部权限、不可删除）；
+      下表用户存放在 <span class="font-mono">Data/admin.db</span>，按勾选的页签授权；密码只要求非空（不强制复杂度）。
+    </div>
+    <table class="svc-table" style="margin-top:12px">
+      <thead><tr><th>用户名</th><th>页签权限</th><th>状态</th><th>备注</th><th style="width:190px">操作</th></tr></thead><tbody>`;
+  for (const u of rows) {
+    const tags = (u.permissionNames && u.permissionNames.length
+      ? u.permissionNames
+      : (u.permissions || []).map(permName))
+      .map(n => `<span class="badge badge-gray" style="margin:1px 3px">${esc(n)}</span>`).join('');
+    html += `<tr>
+      <td class="font-mono">${esc(u.userName)}${u.builtin ? ' <span class="badge badge-green">内置</span>' : ''}</td>
+      <td>${tags || '<span class="text-muted">（无）</span>'}</td>
+      <td>${u.enabled ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-red">停用</span>'}</td>
+      <td class="text-muted">${esc(u.remark)}</td>
+      <td>${u.builtin
+        ? '<button class="btn btn-ghost btn-sm" onclick="switchPanel(\'settings\')">去设置改密</button>'
+        : `<div class="svc-actions">
+             <button class="btn btn-ghost btn-sm" onclick="editUser('${esc(u.userName)}')">编辑</button>
+             <button class="btn btn-ghost btn-sm text-red" onclick="removeUser('${esc(u.userName)}')">删除</button>
+           </div>`}</td>
+    </tr>`;
+  }
+  html += `</tbody></table></div>`;
+  $('panel-users').innerHTML = html;
+}
+
+function editUser(name) {
+  const perms = (usersData && usersData.permissions) || [];
+  const cur = name ? ((usersData && usersData.users) || []).find(u => u.userName === name) : null;
+  if (name && !cur) { toast('用户不存在（先刷新）', 'error'); return; }
+  const curPerms = cur ? (cur.permissions || []) : [];
+  const checks = perms.map(p => `
+    <label style="display:flex;align-items:center;gap:8px;margin:5px 0;font-size:13px">
+      <input type="checkbox" class="f-perm" value="${esc(p.key)}"${curPerms.includes(p.key) ? ' checked' : ''}>
+      <span>${esc(p.name)}</span>
+    </label>`).join('');
+  showModal(cur ? `编辑用户：${esc(name)}` : '新增用户', `
+    <label>用户名</label>
+    <input type="text" id="u-name" value="${esc(cur ? cur.userName : '')}" placeholder="例如 ops" style="margin-bottom:10px">
+    <label>密码${cur ? '（留空 = 不改）' : ''}：不强制复杂度</label>
+    <input type="text" id="u-pass" placeholder="${cur ? '留空表示保持现有密码' : '输入密码'}" style="margin-bottom:10px">
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <input type="checkbox" id="u-enabled"${!cur || cur.enabled ? ' checked' : ''}><span>允许登录</span>
+    </label>
+    <label>页签权限</label>
+    <div style="margin-bottom:10px">${checks || '<span class="text-muted">（无可授权限）</span>'}</div>
+    <label>备注</label>
+    <input type="text" id="u-remark" value="${esc(cur ? cur.remark : '')}" placeholder="可空">
+  `, '保存', async () => {
+    const body = {
+      name: $('u-name').value.trim(),
+      originalName: cur ? cur.userName : '',
+      password: $('u-pass').value,
+      enabled: $('u-enabled').checked,
+      permissions: [...document.querySelectorAll('.f-perm')].filter(c => c.checked).map(c => c.value),
+      remark: $('u-remark').value.trim(),
+    };
+    if (!body.name) { toast('用户名不能为空', 'error'); return; }
+    if (!cur && !body.password.trim()) { toast('新用户必须设置密码', 'error'); return; }
+    try {
+      unwrap(await api('/api/user', { method: 'POST', body: JSON.stringify(body) }));
+      toast('已保存', 'success');
+      await loadUsers(true);
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+async function removeUser(name) {
+  if (!confirm(`删除用户 ${name}？`)) return;
+  try {
+    unwrap(await api('/api/user/delete', { method: 'POST', body: JSON.stringify({ name }) }));
+    toast('已删除', 'success');
+    await loadUsers(true);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
 /* ── 审计 ───────────────────────────────────────────── */
 
 async function loadAudit() {
@@ -609,7 +908,7 @@ function loadSettings() {
       <tr>
         <td>面板新密码</td>
         <td><input type="password" id="s-pass" placeholder="（留空 = 不改）" style="width:200px"></td>
-        <td>密码至少 10 位，且含大写/小写/数字/符号中的至少三类；留空表示保持现有密码不变</td>
+          <td>留空表示保持现有密码不变（不强制复杂度，建议使用不易猜的密码）</td>
       </tr>
       <tr>
         <td></td>

@@ -55,20 +55,26 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     router.map_post("/api/login", login(Arc::clone(&proxy)));
     router.map_post("/api/logout", logout());
 
-    // ── 面板 API（需鉴权，见 `require`）
-    router.map_get("/api/status", guard(Arc::clone(&proxy), status));
-    router.map_get("/api/audit", guard(Arc::clone(&proxy), audit));
-    router.map_post("/api/datasource", guard(Arc::clone(&proxy), save_source));
-    router.map_post("/api/datasource/get", guard(Arc::clone(&proxy), get_source));
-    router.map_post("/api/datasource/token", guard(Arc::clone(&proxy), get_token));
-    router.map_post("/api/datasource/delete", guard(Arc::clone(&proxy), delete_source));
-    router.map_post("/api/readonly", guard(Arc::clone(&proxy), set_read_only));
-    router.map_post("/api/server", guard(Arc::clone(&proxy), save_server));
-    router.map_post("/api/upgrade", guard(Arc::clone(&proxy), upgrade));
-    router.map_get("/api/fields", guard(Arc::clone(&proxy), list_fields));
-    router.map_post("/api/fields", guard(Arc::clone(&proxy), save_field));
-    router.map_post("/api/fields/delete", guard(Arc::clone(&proxy), delete_field));
-    router.map_post("/api/fields/mode", guard(Arc::clone(&proxy), set_field_mode));
+    // ── 面板 API（需鉴权 + 页签权限，见 `guard`）
+    router.map_get("/api/status", guard(Arc::clone(&proxy), "", status));
+    router.map_get("/api/audit", guard(Arc::clone(&proxy), "audit", audit));
+    router.map_post("/api/datasource", guard(Arc::clone(&proxy), "overview", save_source));
+    router.map_post("/api/datasource/get", guard(Arc::clone(&proxy), "overview", get_source));
+    router.map_post("/api/datasource/token", guard(Arc::clone(&proxy), "overview", get_token));
+    router.map_post("/api/datasource/delete", guard(Arc::clone(&proxy), "overview", delete_source));
+    router.map_post("/api/readonly", guard(Arc::clone(&proxy), "overview", set_read_only));
+    router.map_post("/api/server", guard(Arc::clone(&proxy), "settings", save_server));
+    router.map_post("/api/upgrade", guard(Arc::clone(&proxy), "settings", upgrade));
+    router.map_get("/api/fields", guard(Arc::clone(&proxy), "fields", list_fields));
+    router.map_post("/api/fields", guard(Arc::clone(&proxy), "fields", save_field));
+    router.map_post("/api/fields/delete", guard(Arc::clone(&proxy), "fields", delete_field));
+    router.map_post("/api/fields/mode", guard(Arc::clone(&proxy), "fields", set_field_mode));
+    // 用户管理：仅内置管理员（`users` 不在可授予权限表里，表内用户永远拿不到）
+    router.map_get("/api/users", guard(Arc::clone(&proxy), crate::admin::PERM_USERS, list_users));
+    router.map_post("/api/user", guard(Arc::clone(&proxy), crate::admin::PERM_USERS, save_user));
+    router.map_post("/api/user/delete", guard(Arc::clone(&proxy), crate::admin::PERM_USERS, remove_user));
+    // 当前身份与可授权限（前端渲染菜单用：只要求登录）
+    router.map_get("/api/me", me(Arc::clone(&proxy)));
 
     // ── 数据库代理协议（对齐 C# `DbController`；鉴权走各数据源令牌）
     router.map_post("/Db/{action}", db_call(Arc::clone(&proxy), "POST"));
@@ -95,6 +101,11 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
 }
 
 /// 登录（用户名 + 密码 → JWT）。
+///
+/// 两类账号：
+/// 1. **内置管理员**（配置文件 `WebUserName` / `WebPasswordHash`）——全部权限；
+/// 2. **表内用户**（`Data/admin.db` 的 `RDbProxy_PanelUser`）——按所授页签权限，
+///    凭据由内置管理员在「用户」页维护（密码只要求非空）。
 fn login(proxy: Arc<Proxy>) -> dhrust::net::router::RouteHandler {
     route(move |ctx: Ctx| {
         let proxy = Arc::clone(&proxy);
@@ -105,10 +116,21 @@ fn login(proxy: Arc<Proxy>) -> dhrust::net::router::RouteHandler {
             if user.is_empty() || password.is_empty() {
                 return HttpOutcome::Response(fail(400, "用户名与密码不能为空"));
             }
-            if !proxy.authenticate(&user, &password) {
-                dhrust::warn!("面板登录失败：user={user} ip={}", client_ip(&ctx));
-                return HttpOutcome::Response(fail(401, "用户名或密码错误"));
-            }
+            let (permissions, builtin) = if proxy.authenticate(&user, &password) {
+                (crate::admin::all_keys(), true)
+            } else {
+                match crate::admin::verify_login(proxy.base(), &user, &password) {
+                    Ok(Some(panel_user)) => (panel_user.permissions, false),
+                    Ok(None) => {
+                        dhrust::warn!("面板登录失败：user={user} ip={}", client_ip(&ctx));
+                        return HttpOutcome::Response(fail(401, "用户名或密码错误"));
+                    }
+                    Err(e) => {
+                        dhrust::error!("面板用户库不可用：{e}");
+                        return HttpOutcome::Response(fail(500, &format!("面板用户库不可用：{e}")));
+                    }
+                }
+            };
             let jwt = match proxy.jwt() {
                 Ok(jwt) => jwt,
                 Err(e) => return HttpOutcome::Response(fail(500, &e)),
@@ -118,21 +140,33 @@ fn login(proxy: Arc<Proxy>) -> dhrust::net::router::RouteHandler {
             claims.insert("name".into(), json!(user));
             claims.insert("iss".into(), json!("Pek.RDbProxy"));
             claims.insert("from".into(), json!("panel"));
+            claims.insert("perms".into(), json!(permissions));
+            claims.insert("builtin".into(), json!(builtin));
             let token = jwt.encode(&claims);
-            dhrust::info!("面板登录成功：user={user} ip={}", client_ip(&ctx));
-            // 默认密码（admin）→ 按强度规则自动换成强密码并写回，新密码只在本次响应里返回
-            let new_password = match proxy.upgrade_weak_password() {
-                Ok(v) => v,
-                Err(e) => {
-                    dhrust::warn!("默认密码自动升级失败：{e}");
-                    None
+            dhrust::info!(
+                "面板登录成功：user={user} builtin={builtin} perms={} ip={}",
+                permissions.join(","),
+                client_ip(&ctx)
+            );
+            // 内置管理员仍是默认密码（admin）→ 自动换成随机强密码，新密码只在本次响应里返回
+            let new_password = if builtin {
+                match proxy.upgrade_weak_password() {
+                    Ok(v) => v,
+                    Err(e) => {
+                        dhrust::warn!("默认密码自动升级失败：{e}");
+                        None
+                    }
                 }
+            } else {
+                None
             };
             HttpOutcome::Response(ok(json!({
                 "token": token,
                 "user": user,
+                "builtin": builtin,
+                "permissions": permissions,
                 "newPassword": new_password,
-                "passwordRule": "至少 10 位，且包含大写/小写/数字/符号中的至少三类",
+                "passwordRule": "密码不能为空（不强制复杂度）",
             })))
         }
     })
@@ -143,16 +177,64 @@ fn logout() -> dhrust::net::router::RouteHandler {
     route(|_ctx: Ctx| async { HttpOutcome::Response(ok(json!({ "ok": true }))) })
 }
 
-/// 包装一个需要面板鉴权的处理函数（用 `fn` 指针，无状态）。
+/// 当前登录身份 + 可授权限（前端据此隐藏无权限页签）。
+fn me(proxy: Arc<Proxy>) -> dhrust::net::router::RouteHandler {
+    route(move |ctx: Ctx| {
+        let proxy = Arc::clone(&proxy);
+        async move {
+            match require(&proxy, &ctx) {
+                Ok(who) => {
+                    let allowed: Vec<Value> = crate::admin::ALL_PERMISSIONS
+                        .iter()
+                        .filter(|(key, _)| who.builtin || who.perms.iter().any(|p| p == key))
+                        .map(|(key, name)| json!({ "key": key, "name": name }))
+                        .collect();
+                    HttpOutcome::Response(ok(json!({
+                        "user": who.user,
+                        "builtin": who.builtin,
+                        "permissions": who.perms,
+                        "allowed": allowed,
+                    })))
+                }
+                Err(resp) => HttpOutcome::Response(resp),
+            }
+        }
+    })
+}
+
+/// 面板主体（登录身份）。
+struct Principal {
+    user: String,
+    perms: Vec<String>,
+    builtin: bool,
+}
+
+/// 包装一个需要「登录 + 指定页签权限」的处理函数（`perm` 为空表示只要登录）。
 fn guard(
     proxy: Arc<Proxy>,
+    perm: &'static str,
     handler: fn(&Proxy, &Ctx) -> HttpResponse,
 ) -> dhrust::net::router::RouteHandler {
     route(move |ctx: Ctx| {
         let proxy = Arc::clone(&proxy);
         async move {
             match require(&proxy, &ctx) {
-                Ok(_user) => HttpOutcome::Response(handler(&proxy, &ctx)),
+                Ok(who) => {
+                    if perm.is_empty() || who.builtin || who.perms.iter().any(|p| p == perm) {
+                        HttpOutcome::Response(handler(&proxy, &ctx))
+                    } else {
+                        dhrust::warn!(
+                            "面板权限不足：user={} perm={perm} path={} ip={}",
+                            who.user,
+                            ctx.req.path,
+                            client_ip(&ctx)
+                        );
+                        HttpOutcome::Response(fail(
+                            403,
+                            &format!("没有权限：{}（{perm}）", crate::admin::permission_name(perm)),
+                        ))
+                    }
+                }
                 Err(resp) => HttpOutcome::Response(resp),
             }
         }
@@ -161,7 +243,9 @@ fn guard(
 
 /// 面板鉴权（对齐 Pek.RAgent）：
 /// 令牌有效（JWT）→ 放行；否则按 `WebAuthLevel`：None 全放行 / LocalOnly 本机放行 / Full 必须令牌。
-fn require(proxy: &Proxy, ctx: &Ctx) -> Result<String, HttpResponse> {
+///
+/// 免登录的本机（None / LocalOnly + 回环）按**内置管理员**处理——本机能改配置就能管理用户。
+fn require(proxy: &Proxy, ctx: &Ctx) -> Result<Principal, HttpResponse> {
     if let Some(token) = bearer_token(ctx)
         && let Ok(jwt) = proxy.jwt()
         && let Ok(claims) = jwt.validate(&token)
@@ -171,14 +255,41 @@ fn require(proxy: &Proxy, ctx: &Ctx) -> Result<String, HttpResponse> {
             .and_then(Value::as_str)
             .unwrap_or("admin")
             .to_string();
-        return Ok(user);
+        let builtin = claims
+            .get("builtin")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let perms = claims
+            .get("perms")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Ok(Principal {
+            user,
+            perms,
+            builtin,
+        });
     }
     let server = proxy.server_config();
     let level = AuthLevel::parse(&server.web_auth_level);
     let ip = client_ip(ctx);
     match level {
-        AuthLevel::None => Ok("anonymous".into()),
-        AuthLevel::LocalOnly if is_loopback(&ip) => Ok("local".into()),
+        AuthLevel::None => Ok(Principal {
+            user: "anonymous".into(),
+            perms: crate::admin::all_keys(),
+            builtin: true,
+        }),
+        AuthLevel::LocalOnly if is_loopback(&ip) => Ok(Principal {
+            user: "local".into(),
+            perms: crate::admin::all_keys(),
+            builtin: true,
+        }),
         _ => Err(fail(401, "需要登录")),
     }
 }
@@ -383,6 +494,97 @@ fn set_field_mode(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
     match proxy.save_policy(policy) {
         Ok(()) => ok(json!({ "mode": mode })),
         Err(e) => fail(500, &e),
+    }
+}
+
+// ————— 面板用户（仅内置管理员；`users` 不在可授予权限表内） —————
+
+/// `GET /api/users`：用户列表 + 可授权限（内置管理员以虚拟条目展示）。
+fn list_users(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
+    let mut data = match crate::admin::list_users_json(proxy.base()) {
+        Ok(data) => data,
+        Err(e) => return fail(500, &e),
+    };
+    if let Some(obj) = data.as_object_mut() {
+        let server = proxy.server_config();
+        let keys: Vec<Value> = crate::admin::ALL_PERMISSIONS
+            .iter()
+            .map(|(k, _)| json!(k))
+            .collect();
+        let names: Vec<Value> = crate::admin::ALL_PERMISSIONS
+            .iter()
+            .map(|(_, n)| json!(n))
+            .collect();
+        obj.insert(
+            "builtinAdmin".to_string(),
+            json!({
+                "userName": server.web_user_name,
+                "permissions": keys,
+                "permissionNames": names,
+                "enabled": true,
+                "remark": "内置管理员（Config/Proxy.toml 的 WebUserName / WebPassword，在「设置」里改）",
+            }),
+        );
+    }
+    ok(data)
+}
+
+/// `POST /api/user`：保存用户（新建/更新；`originalName` 非空且与 `name` 不同表示改名）。
+fn save_user(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    let body = json_body(ctx);
+    let name = text(&body, "name");
+    if name.is_empty() {
+        return fail(400, "用户名不能为空");
+    }
+    let original = text(&body, "originalName");
+    let password = text(&body, "password");
+    let permissions: Vec<String> = body
+        .get("permissions")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let enabled = body.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    let remark = text(&body, "remark");
+    let password = if password.trim().is_empty() {
+        None
+    } else {
+        Some(password.as_str())
+    };
+    if let Err(e) =
+        crate::admin::save_user(proxy.base(), &name, password, &permissions, enabled, &remark)
+    {
+        return fail(400, &e);
+    }
+    // 改名：先保存新名字，成功后再删旧用户（失败也不影响已保存的新用户）
+    if !original.is_empty()
+        && !original.eq_ignore_ascii_case(&name)
+        && let Err(e) = crate::admin::delete_user(proxy.base(), &original)
+    {
+        dhrust::warn!("改名后删除旧用户失败：{original} → {name}：{e}");
+    }
+    dhrust::info!("面板用户已保存：{name} perms={}", permissions.join(","));
+    ok(json!({ "ok": true }))
+}
+
+/// `POST /api/user/delete`：删除用户。
+fn remove_user(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    let body = json_body(ctx);
+    let name = text(&body, "name");
+    if name.is_empty() {
+        return fail(400, "用户名不能为空");
+    }
+    match crate::admin::delete_user(proxy.base(), &name) {
+        Ok(()) => {
+            dhrust::info!("面板用户已删除：{name}");
+            ok(json!({ "ok": true }))
+        }
+        Err(e) => fail(400, &e),
     }
 }
 

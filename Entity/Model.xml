@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<EntityModel xmlns:xs="http://www.w3.org/2001/XMLSchema-instance" xs:schemaLocation="https://newlifex.com https://newlifex.com/Model202509.xsd" Version="1.0.2026.1023" Document="https://newlifex.com/xcode/model" ModelVersion="2.0.2026.130" xmlns="https://newlifex.com/Model202509.xsd">
+  <Option>
+    <BaseClass>EntityBase</BaseClass>
+    <Namespace>Pek.RDbProxy.Entity</Namespace>
+    <Output>.\Entity\</Output>
+    <ConnName>Admin</ConnName>
+    <NameFormat>Default</NameFormat>
+    <ChineseFileName>False</ChineseFileName>
+    <Nullable>True</Nullable>
+    <HasIModel>False</HasIModel>
+  </Option>
+  <Tables>
+    <Table Name="PanelUser" TableName="RDbProxy_PanelUser" Description="面板用户（多用户与页签权限；内置管理员来自配置文件，不落本表）">
+      <Columns>
+        <Column Name="Id" DataType="Int32" Identity="True" PrimaryKey="True" Description="编号" />
+        <Column Name="UserName" DataType="String" Length="50" Master="True" Nullable="False" Description="用户名（唯一）" />
+        <Column Name="PasswordHash" DataType="String" Length="128" Nullable="False" Description="密码哈希（SHA-256(salt:password) 的 hex）" />
+        <Column Name="Salt" DataType="String" Length="64" Nullable="False" Description="随机盐（hex）" />
+        <Column Name="Permissions" DataType="String" Length="500" Nullable="False" Description="页签权限（逗号分隔：overview,fields,audit,settings）" />
+        <Column Name="Enabled" DataType="Boolean" Nullable="False" Description="是否启用（禁用后无法登录）" />
+        <Column Name="Remark" DataType="String" Length="200" Description="备注" />
+        <Column Name="CreateTime" DataType="DateTime" Description="创建时间" />
+        <Column Name="UpdateTime" DataType="DateTime" Description="更新时间" />
+      </Columns>
+    </Table>
+    <Table Name="OperationLog" TableName="RDbProxy_OperationLog" Description="面板操作审计">
+      <Columns>
+        <Column Name="Id" DataType="Int32" Identity="True" PrimaryKey="True" Description="编号" />
+        <Column Name="Category" DataType="String" Length="20" Description="类别（panel）" />
+        <Column Name="LogTime" DataType="DateTime" Nullable="False" Description="时间" />
+        <Column Name="UserName" DataType="String" Length="50" Description="操作者" />
+        <Column Name="Ip" DataType="String" Length="64" Description="来源 IP" />
+        <Column Name="Action" DataType="String" Length="50" Description="动作" />
+        <Column Name="Title" DataType="String" Length="50" Description="动作中文名" />
+        <Column Name="Method" DataType="String" Length="10" Description="HTTP 方法" />
+        <Column Name="Path" DataType="String" Length="200" Description="请求路径" />
+        <Column Name="Detail" DataType="String" Length="500" Description="参数摘要（已脱敏）" />
+        <Column Name="Success" DataType="Boolean" Nullable="False" Description="是否成功" />
+        <Column Name="Code" DataType="Int32" Nullable="False" Description="结果码" />
+        <Column Name="Message" DataType="String" Length="300" Description="结果消息" />
+        <Column Name="ElapsedMs" DataType="Int32" Nullable="False" Description="耗时（毫秒）" />
+      </Columns>
+    </Table>
+  </Tables>
+</EntityModel>

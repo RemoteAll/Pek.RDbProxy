@@ -635,7 +635,14 @@ impl Proxy {
         };
 
         let Some(source) = self.source_of(&db_name) else {
-            let message = format!("数据源不存在：{db_name}");
+            // 常见误区：项目的 `Database=` 要填**数据源名**（面板卡片上的名称），不是真实库名。
+            // 错误里直接列出可用名，省得对着配置猜。
+            let names = self.source_names();
+            let message = if names.is_empty() {
+                format!("数据源不存在：{db_name}（当前没有任何数据源，先在面板添加）")
+            } else {
+                format!("数据源不存在：{db_name}（可用：{}）", names.join(", "))
+            };
             self.record(&db_name, action, &token, &sql, started, false, 0, message.clone());
             return db_error(404, &message);
         };
@@ -1023,43 +1030,15 @@ pub fn hash_password(password: &str) -> String {
     format!("{salt}:{}", dhrust::sign::salted_sha256_hex(&salt, password))
 }
 
-/// 密码强度校验（面板统一规则）：
-/// 至少 10 位；大写/小写/数字/符号至少三类；禁止弱口令与用户名相同。
-pub fn password_strength(user: &str, password: &str) -> Result<(), String> {
-    let pwd = password.trim();
-    if pwd.chars().count() < 10 {
-        return Err("密码至少 10 位".into());
-    }
-    let classes = [
-        pwd.chars().any(|c| c.is_ascii_lowercase()),
-        pwd.chars().any(|c| c.is_ascii_uppercase()),
-        pwd.chars().any(|c| c.is_ascii_digit()),
-        pwd.chars().any(|c| !c.is_ascii_alphanumeric()),
-    ]
-    .iter()
-    .filter(|hit| **hit)
-    .count();
-    if classes < 3 {
-        return Err("密码需包含大写/小写/数字/符号中的至少三类".into());
-    }
-    const WEAK: &[&str] = &[
-        "admin",
-        "administrator",
-        "123456",
-        "12345678",
-        "password",
-        "passw0rd",
-        "qwerty",
-        "root",
-        "pekrdbproxy",
-        "rdbproxy",
-        "abc123",
-        "111111",
-        "admin123",
-    ];
-    let lower = pwd.to_ascii_lowercase();
-    if WEAK.contains(&lower.as_str()) || lower.contains("123456") || lower == user.trim().to_ascii_lowercase() {
-        return Err("密码过于简单（禁止弱口令或与用户名相同）".into());
+/// 密码校验（对齐 `pek-radmin` 口径：**只禁止空密码**）。
+///
+/// 有意不做复杂度 / 弱口令字典 / 与用户名相同的校验：面板用户自己决定密码强度，
+/// 安全护栏改在别处（默认 admin 首次登录强制换密、面板鉴权级别、JWT 密钥独立）。
+/// 此前的“至少 10 位 + 三类 + 弱口令字典（含 `123456` 子串）”会把
+/// `Berin123456$$` 这类正常密码误判为弱口令，属于过度限制。
+pub fn password_strength(_user: &str, password: &str) -> Result<(), String> {
+    if password.trim().is_empty() {
+        return Err("密码不能为空".into());
     }
     Ok(())
 }

@@ -6,6 +6,7 @@
 //! 协议完全复用 Pek.RCode 的 `/Db/*`（与 C# `DbController` 一致），
 //! Rust / C# 客户端都能直连。
 
+pub mod admin;
 pub mod config;
 pub mod panel;
 pub mod policy;

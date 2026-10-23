@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pek.RDbProxy 管理面板</title>
-<link rel="stylesheet" href="/assets/app.css?v=9">
+<link rel="stylesheet" href="/assets/app.css?v=11">
 </head>
 <body>
 
@@ -35,9 +35,11 @@
 </header>
 
 <nav id="nav-bar" class="glass">
-<a data-panel="overview" class="active">📊 概览</a>
-<a data-panel="audit">📋 SQL 审计</a>
-<a data-panel="settings">⚙ 设置</a>
+<a data-panel="overview" data-perm="overview" class="active">📊 概览</a>
+<a data-panel="audit" data-perm="audit">📋 SQL 审计</a>
+<a data-panel="fields" data-perm="fields">🛡 字段安全</a>
+<a data-panel="users" data-perm="users">👥 用户</a>
+<a data-panel="settings" data-perm="settings">⚙ 设置</a>
 </nav>
 
 <div id="sec-banner" class="sec-banner hidden"></div>
@@ -45,6 +47,8 @@
 <main>
 <div id="panel-overview" class="panel active"></div>
 <div id="panel-audit" class="panel"></div>
+<div id="panel-fields" class="panel"></div>
+<div id="panel-users" class="panel"></div>
 <div id="panel-settings" class="panel"></div>
 </main>
 </div>
@@ -64,6 +68,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="/assets/app.js?v=9"></script>
+<script src="/assets/app.js?v=11"></script>
 </body>
 </html>

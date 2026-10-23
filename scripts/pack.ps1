@@ -18,6 +18,14 @@ $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 Push-Location $root
 try {
+    # ── 前端语法门禁（app.js 解析失败会让整块面板函数都不存在，如 doLogin；有 node 才检查）
+    $appJs = Join-Path $root 'res\app.js'
+    if ((Test-Path $appJs) -and (Get-Command node -ErrorAction SilentlyContinue)) {
+        & node --check $appJs
+        if ($LASTEXITCODE -ne 0) { throw 'res/app.js 语法错误（node --check 未通过），已中止打包' }
+        Write-Host '前端语法检查：app.js 通过' -ForegroundColor DarkGray
+    }
+
     # ── 版本
     $cargoPath = Join-Path $root 'Cargo.toml'
     $cargo = [IO.File]::ReadAllText($cargoPath, [Text.Encoding]::UTF8)

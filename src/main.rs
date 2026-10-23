@@ -284,7 +284,7 @@ fn ensure_key(base: &std::path::Path) -> Result<[u8; 32], String> {
 fn reset_password_command(base: &std::path::Path, password: Option<&str>) -> i32 {
     let Some(password) = password.filter(|p| !p.trim().is_empty()) else {
         eprintln!("用法：pek-rdbproxy -resetPassword \"<新密码>\"");
-        eprintln!("规则：至少 10 位，且包含大写/小写/数字/符号中的至少三类");
+        eprintln!("密码不能为空（不强制复杂度，建议自行使用不易猜的密码）");
         return 2;
     };
     let mut cfg = match pek_rdbproxy::config::load(base) {

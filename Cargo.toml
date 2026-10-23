@@ -1,6 +1,6 @@
 [package]
 name = "pek-rdbproxy"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 description = "本地数据库代理：项目侧只见代理地址与令牌，真实连接串只留在代理端"
 license = "MIT"
@@ -31,5 +31,7 @@ chrono = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
 # 面板令牌：与 C# NewLife `JwtBuilder` 互通的 HS256（Pek.RCard 已切换，勿逐仓复制）
 pek-rpermissions = { path = "../Pek.RPermissions" }
+# 管理组装件：面板用户 / 权限 / 操作审计数据层（不引入 Pek.RCode 之外的公共能力）
+pek-radmin = { path = "../Pek.RAdmin" }
 # WAF：所有带网页的项目必须接（admin_api 预设）
 pek-rwaf = { path = "../Pek.RWaf" }
