@@ -60,6 +60,9 @@ fn main() {
             0
         }
         Some("-encrypt" | "--encrypt") => encrypt_command(&base, args.get(1).map(String::as_str)),
+        Some("-resetPassword" | "--resetPassword") => {
+            reset_password_command(&base, args.get(1).map(String::as_str))
+        }
         Some("-install" | "--install") => service_command(&base, "install"),
         Some("-uninstall" | "--uninstall") => service_command(&base, "uninstall"),
         Some("-start" | "--start") => service_command(&base, "start"),
@@ -217,6 +220,38 @@ fn ensure_key(base: &std::path::Path) -> Result<[u8; 32], String> {
     std::fs::write(&path, &seed).map_err(|e| format!("写入密钥失败：{e}"))?;
     println!("已生成密钥：{}", path.display());
     Ok(dhrust::secret::key_from_seed(&seed))
+}
+
+/// `-resetPassword <新密码>`：重置面板密码（忘记密码时的兜底，需重启服务）。
+fn reset_password_command(base: &std::path::Path, password: Option<&str>) -> i32 {
+    let Some(password) = password.filter(|p| !p.trim().is_empty()) else {
+        eprintln!("用法：pek-rdbproxy -resetPassword \"<新密码>\"");
+        eprintln!("规则：至少 10 位，且包含大写/小写/数字/符号中的至少三类");
+        return 2;
+    };
+    let mut cfg = match pek_rdbproxy::config::load(base) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("读取配置失败：{e}");
+            return 1;
+        }
+    };
+    if let Err(e) = pek_rdbproxy::proxy::password_strength(&cfg.server.web_user_name, password) {
+        eprintln!("密码不符合规则：{e}");
+        return 1;
+    }
+    cfg.server.web_password_hash = pek_rdbproxy::proxy::hash_password(password);
+    match pek_rdbproxy::config::save(base, &cfg) {
+        Ok(path) => {
+            println!("面板密码已重置（用户名 {}）→ {}", cfg.server.web_user_name, path.display());
+            println!("重启服务后生效：pek-rdbproxy -restart");
+            0
+        }
+        Err(e) => {
+            eprintln!("保存失败：{e}");
+            1
+        }
+    }
 }
 
 /// 服务化命令（install/uninstall/start/stop/restart）。

@@ -121,7 +121,17 @@ async function doLogin() {
     if (!r.ok || !j.ok) throw new Error((j && j.message) || '登录失败');
     storeToken(j.data.token, $('lremember').checked);
     enterApp();
-  } catch (e) {
+    if (j.data.newPassword) {
+      const pwd = j.data.newPassword;
+      showModal('⚠ 默认密码已自动更换', `
+        <p>检测到面板仍在使用默认密码 <b>admin</b>，已按强度规则自动更换为强密码：</p>
+        <div class="font-mono" style="word-break:break-all;background:var(--surface-2);padding:12px;border-radius:8px;font-size:15px;margin:10px 0">${esc(pwd)}</div>
+        <p>请立即复制保存（<b>只显示这一次</b>），之后可在「设置」里改成你自己记得的强密码。</p>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn btn-primary btn-sm" onclick="navigator.clipboard.writeText('${esc(pwd)}')">复制新密码</button>
+        </div>`,
+        '我已保存', null);
+    } catch (e) {
     err.textContent = e.message || '登录失败';
     err.classList.add('show');
   }
@@ -204,8 +214,7 @@ function renderBanner() {
   if (s.defaultPassword) {
     el.classList.remove('hidden');
     el.textContent = '⚠ 面板仍在使用默认密码（admin/admin），请立即到「设置」修改'
-      + (s.allowRemote ? '；当前已允许远程访问，存在被扫描利用风险' : '');
-  } else {
+      + (s.allowRemote ? '；当前已允许远程访问，存在被扫描利用风险' : '');  } else {
     el.classList.add('hidden');
   }
 }
@@ -578,7 +587,10 @@ function loadSettings() {
             <input type="checkbox" id="s-remote" ${s.allowRemote ? 'checked' : ''}><span class="track"><span class="thumb"></span></span>
           </label>
         </td>
-        <td>关闭时只接受本机回环请求；开启后注意防火墙与鉴权级别</td>
+        <td>关闭时只接受本机回环请求。开启后需<b>重启服务</b>才生效，且需自行在系统防火墙放行端口：<br>
+          Windows：<span class="font-mono">netsh advfirewall firewall add rule name="PekRDbProxy" dir=in action=allow protocol=TCP localport=${esc(s.port)}</span><br>
+          Linux：<span class="font-mono">firewall-cmd --add-port=${esc(s.port)}/tcp --permanent &amp;&amp; firewall-cmd --reload</span>（ufw：<span class="font-mono">ufw allow ${esc(s.port)}/tcp</span>）<br>
+          云服务器还需在安全组放行同一端口。</td>
       </tr>
       <tr>
         <td>面板鉴权级别</td>
@@ -597,7 +609,7 @@ function loadSettings() {
       <tr>
         <td>面板新密码</td>
         <td><input type="password" id="s-pass" placeholder="（留空 = 不改）" style="width:200px"></td>
-        <td>留空表示保持现有密码不变</td>
+        <td>密码至少 10 位，且含大写/小写/数字/符号中的至少三类；留空表示保持现有密码不变</td>
       </tr>
       <tr>
         <td></td>
@@ -638,7 +650,7 @@ async function saveSettings() {
   };
   try {
     const r = unwrap(await api('/api/server', { method: 'POST', body: JSON.stringify(payload) }));
-    if (r.restartRequired) toast('已保存；端口变更需重启服务后生效', 'info');
+    if (r.restartRequired) toast('已保存；端口/远程访问变更需重启服务后生效', 'info');
     else toast('已保存', 'success');
     loadStatus();
   } catch (e) { toast(e.message, 'error'); }

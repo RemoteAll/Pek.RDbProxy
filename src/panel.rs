@@ -116,7 +116,20 @@ fn login(proxy: Arc<Proxy>) -> dhrust::net::router::RouteHandler {
             claims.insert("from".into(), json!("panel"));
             let token = jwt.encode(&claims);
             dhrust::info!("面板登录成功：user={user} ip={}", client_ip(&ctx));
-            HttpOutcome::Response(ok(json!({ "token": token, "user": user })))
+            // 默认密码（admin）→ 按强度规则自动换成强密码并写回，新密码只在本次响应里返回
+            let new_password = match proxy.upgrade_weak_password() {
+                Ok(v) => v,
+                Err(e) => {
+                    dhrust::warn!("默认密码自动升级失败：{e}");
+                    None
+                }
+            };
+            HttpOutcome::Response(ok(json!({
+                "token": token,
+                "user": user,
+                "newPassword": new_password,
+                "passwordRule": "至少 10 位，且包含大写/小写/数字/符号中的至少三类",
+            })))
         }
     })
 }
@@ -183,7 +196,7 @@ fn status(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
             "allowRemote": server.allow_remote,
             "webUserName": server.web_user_name,
             "webAuthLevel": server.web_auth_level,
-            "defaultPassword": server.web_password_hash.is_empty(),
+            "defaultPassword": proxy.uses_default_password(),
         },
         "sources": sources,
     }))
@@ -320,13 +333,14 @@ fn save_server(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
         allow_remote: body.get("allowRemote").and_then(Value::as_bool),
     };
     let old_port = proxy.server_config().port;
+    let old_allow_remote = proxy.server_config().allow_remote;
     match proxy.update_server(patch) {
         Ok(server) => ok(json!({
             "port": server.port,
             "webUserName": server.web_user_name,
             "webAuthLevel": server.web_auth_level,
             "allowRemote": server.allow_remote,
-            "restartRequired": server.port != old_port,
+            "restartRequired": server.port != old_port || server.allow_remote != old_allow_remote,
         })),
         Err(e) => fail(400, &e),
     }

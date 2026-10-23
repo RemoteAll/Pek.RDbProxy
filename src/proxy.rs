@@ -300,7 +300,7 @@ impl Proxy {
                 .map(|s| s.section.connection.clone())
                 .ok_or_else(|| format!("数据源不存在：{name}"))?
         };
-        resolve_connection(&stored)
+        resolve_connection(&self.base, &stored)
     }
 
     /// 运行时长（秒）。
@@ -356,7 +356,7 @@ impl Proxy {
             return Err("令牌不能为空（用 -token 生成，或面板「生成」）".into());
         }
         // 先验证明文可解，再转成磁盘形态（enc:v1: 密文）保存
-        resolve_connection(&section.connection)?;
+        resolve_connection(&self.base, &section.connection)?;
         section.connection = encrypt_connection(&self.base, &section.connection)?;
 
         let source = Arc::new(open_source(&self.base, &section)?);
@@ -454,6 +454,7 @@ impl Proxy {
             next.web_user_name = name;
         }
         if let Some(password) = patch.password.filter(|p| !p.trim().is_empty()) {
+            password_strength(&next.web_user_name, &password)?;
             next.web_password_hash = hash_password(&password);
         }
         if let Some(level) = patch.auth_level {
@@ -475,6 +476,26 @@ impl Proxy {
             return false;
         }
         verify_password(&server.web_password_hash, password)
+    }
+
+    /// 面板是否仍在用默认密码（`admin`）。
+    pub fn uses_default_password(&self) -> bool {
+        verify_password(&self.server_config().web_password_hash, "admin")
+    }
+
+    /// 登录成功后发现仍是默认密码 → 自动换成强密码并写回，返回新密码（一次性展示）。
+    pub fn upgrade_weak_password(&self) -> Result<Option<String>, String> {
+        let server = self.server_config();
+        if !verify_password(&server.web_password_hash, "admin") {
+            return Ok(None);
+        }
+        let new_password = generate_password();
+        let mut next = server;
+        next.web_password_hash = hash_password(&new_password);
+        *self.server.write().map_err(|_| "状态锁异常".to_string())? = next;
+        self.save_config()?;
+        dhrust::warn!("检测到默认密码 admin，已按强度规则自动升级并写回配置（新密码仅在登录响应中返回一次）");
+        Ok(Some(new_password))
     }
 
     /// JWT 密钥（首次使用时生成并落盘到配置；格式 `HS256:<随机>`，与 Pek 系其它项目同口径）。
@@ -729,7 +750,7 @@ fn open_source(base: &Path, section: &DatabaseSection) -> Result<DataSource, Str
         return Err("数据源 Name 不能为空".into());
     }
     // SQLite 相对路径按程序基目录绝对化并建目录（否则会相对进程 CWD，`Data/x.db` 打不开）
-    let raw = resolve_connection(&section.connection)?;
+    let raw = resolve_connection(base, &section.connection)?;
     let connection = pek_rcode::database::resolve_connection(base, &raw)?;
     let (dal, open_error, kind) = match Dal::open(&connection) {
         Ok(dal) => {
@@ -752,13 +773,13 @@ fn open_source(base: &Path, section: &DatabaseSection) -> Result<DataSource, Str
     })
 }
 
-/// 解析连接串：`enc:v1:` 加密值需要用本机密钥解密。
-fn resolve_connection(raw: &str) -> Result<String, String> {
+/// 解析连接串：`enc:v1:` 加密值需要用**同一 base** 下的密钥（`Config/.key`）解密。
+fn resolve_connection(base: &Path, raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     if !dhrust::secret::is_encrypted(raw) {
         return Ok(raw.to_string());
     }
-    let key = load_key()?;
+    let key = ensure_key(base)?;
     dhrust::secret::decrypt(raw, &key).map_err(|e| format!("连接串解密失败：{e}"))
 }
 
@@ -855,6 +876,52 @@ fn normalize_jwt_secret(secret: &str) -> String {
 pub fn hash_password(password: &str) -> String {
     let salt = new_salt();
     format!("{salt}:{}", dhrust::sign::salted_sha256_hex(&salt, password))
+}
+
+/// 密码强度校验（面板统一规则）：
+/// 至少 10 位；大写/小写/数字/符号至少三类；禁止弱口令与用户名相同。
+pub fn password_strength(user: &str, password: &str) -> Result<(), String> {
+    let pwd = password.trim();
+    if pwd.chars().count() < 10 {
+        return Err("密码至少 10 位".into());
+    }
+    let classes = [
+        pwd.chars().any(|c| c.is_ascii_lowercase()),
+        pwd.chars().any(|c| c.is_ascii_uppercase()),
+        pwd.chars().any(|c| c.is_ascii_digit()),
+        pwd.chars().any(|c| !c.is_ascii_alphanumeric()),
+    ]
+    .iter()
+    .filter(|hit| **hit)
+    .count();
+    if classes < 3 {
+        return Err("密码需包含大写/小写/数字/符号中的至少三类".into());
+    }
+    const WEAK: &[&str] = &[
+        "admin",
+        "administrator",
+        "123456",
+        "12345678",
+        "password",
+        "passw0rd",
+        "qwerty",
+        "root",
+        "pekrdbproxy",
+        "rdbproxy",
+        "abc123",
+        "111111",
+        "admin123",
+    ];
+    let lower = pwd.to_ascii_lowercase();
+    if WEAK.contains(&lower.as_str()) || lower.contains("123456") || lower == user.trim().to_ascii_lowercase() {
+        return Err("密码过于简单（禁止弱口令或与用户名相同）".into());
+    }
+    Ok(())
+}
+
+/// 生成一个符合强度规则的随机密码（20 位，含大写/小写/数字/符号）。
+pub fn generate_password() -> String {
+    format!("Pk9!{}", dhrust::random::hex(8))
 }
 
 /// 校验「盐:哈希」形式的密码串。
