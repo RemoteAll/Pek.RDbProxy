@@ -245,6 +245,68 @@ fn panel_login_uses_jwt_and_crud_works() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// 字段级安全：`mask` 保留列但值变 `***`；`deny` 让列从结果集消失（`SELECT *` 也一样）。
+#[test]
+fn field_policy_masks_and_blocks_columns() {
+    use pek_rdbproxy::policy::{Action, Mode, Rule};
+
+    let base = temp_dir("field-policy");
+    let proxy = build_proxy(&base, true, "");
+    let mut policy = proxy.policy_snapshot();
+    policy.mode = Mode::Enforce;
+    // enforce 下未登记列默认不返回，所以常规列要显式 allow
+    policy.upsert(Rule {
+        db: "demo".into(),
+        column: "Id".into(),
+        action: Action::Allow,
+        note: String::new(),
+    });
+    policy.upsert(Rule {
+        db: "demo".into(),
+        column: "Name".into(),
+        action: Action::Mask,
+        note: "敏感列".into(),
+    });
+    proxy.save_policy(policy).expect("保存策略");
+    let addr = serve(Arc::clone(&proxy));
+    let client = DbClient::new(format!("http://{addr}"), "demo", Some("tk-test-123456"));
+    client.login().expect("登录");
+
+    let set = client
+        .query_rowset("SELECT Id, Name FROM t", None)
+        .expect("查询应成功");
+    assert_eq!(set.columns.len(), 2, "掩码列应保留：{:?}", set.columns);
+    assert_eq!(
+        set.rows[0].get_by_name("Name").and_then(|v| v.as_str()),
+        Some("***"),
+        "掩码值应为 ***"
+    );
+    assert!(
+        set.rows[0].get_by_name("Id").is_some(),
+        "非掩码列应原样保留"
+    );
+
+    // 改为拒绝：列从结果集消失（含 SELECT *）
+    let mut policy = proxy.policy_snapshot();
+    policy.upsert(Rule {
+        db: "demo".into(),
+        column: "Name".into(),
+        action: Action::Deny,
+        note: String::new(),
+    });
+    proxy.save_policy(policy).expect("保存策略");
+    let set = client
+        .query_rowset("SELECT * FROM t", None)
+        .expect("查询应成功");
+    assert_eq!(set.columns.len(), 1, "拒绝列应消失：{:?}", set.columns);
+    assert!(
+        set.rows[0].get_by_name("Name").is_none(),
+        "SELECT * 也拿不到被拒绝的列"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// 首启默认账号：`admin/admin` 本身不满足强度规则，但必须能建（登录后立刻强制升级）。
 #[test]
 fn default_account_is_created_even_though_admin_is_weak() {

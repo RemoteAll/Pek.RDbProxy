@@ -655,7 +655,7 @@ function editFieldRule(db, column) {
     <label>动作</label>
     <select id="f-action" style="margin-bottom:10px">
       <option value="deny"${cur.action === 'deny' ? ' selected' : ''}>拒绝（永不返回，连 SELECT * 也拿不到）</option>
-      <option value="mask"${cur.action === 'mask' ? ' selected' : ''}>掩码（当前实现等同不返回）</option>
+      <option value="mask"${cur.action === 'mask' ? ' selected' : ''}>掩码（列保留，值显示 *** ）</option>
       <option value="allow"${cur.action === 'allow' ? ' selected' : ''}>允许（显式放行）</option>
     </select>
     <label>备注</label>

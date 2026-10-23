@@ -786,8 +786,10 @@ impl Proxy {
         use crate::policy::Action;
         let policy = self.policy_snapshot();
         let mut keep: Vec<usize> = Vec::with_capacity(set.columns.len());
+        let mut masks: Vec<usize> = Vec::new();
         let mut unknown: Vec<String> = Vec::new();
         let mut dropped: Vec<String> = Vec::new();
+        let mut masked: Vec<String> = Vec::new();
         for (index, column) in set.columns.iter().enumerate() {
             let (action, registered) = policy.decide(db, column);
             if !registered {
@@ -795,16 +797,29 @@ impl Proxy {
             }
             match action {
                 Action::Allow => keep.push(index),
-                Action::Mask | Action::Deny => dropped.push(column.clone()),
+                // 脱敏：列保留、值替换为 `***`（ORM 仍能取到该列，不会报"字段不存在"）
+                Action::Mask => {
+                    keep.push(index);
+                    masks.push(index);
+                    masked.push(column.clone());
+                }
+                // 拒绝：列直接从结果集消失（连 SELECT * 也拿不到）
+                Action::Deny => dropped.push(column.clone()),
             }
         }
         if !unknown.is_empty() {
             self.unknown_fields.observe(db, &unknown);
         }
-        if !dropped.is_empty() || !unknown.is_empty() {
+        if !dropped.is_empty() || !masked.is_empty() || !unknown.is_empty() {
             let mut note = String::new();
             if !dropped.is_empty() {
                 note.push_str(&format!("字段已拦截：{}", dropped.join(",")));
+            }
+            if !masked.is_empty() {
+                if !note.is_empty() {
+                    note.push('；');
+                }
+                note.push_str(&format!("字段已脱敏：{}", masked.join(",")));
             }
             if !unknown.is_empty() {
                 if !note.is_empty() {
@@ -813,7 +828,17 @@ impl Proxy {
                 note.push_str(&format!("未登记字段：{}", unknown.join(",")));
             }
             dhrust::warn!("db={db} {note}");
-            return (set.project(&keep), note);
+            let masked_positions: Vec<usize> = keep
+                .iter()
+                .enumerate()
+                .filter(|(_, original)| masks.contains(original))
+                .map(|(position, _)| position)
+                .collect();
+            let mut out = set.project(&keep);
+            if !masked_positions.is_empty() {
+                out = out.mask_values(&masked_positions, "***");
+            }
+            return (out, note);
         }
         (set, String::new())
     }
