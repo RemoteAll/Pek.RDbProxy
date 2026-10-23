@@ -178,7 +178,14 @@ pub struct Proxy {
     registry: RwLock<Registry>,
     audit: Mutex<VecDeque<AuditEntry>>,
     started: Instant,
+    /// 监听地址热重绑钩子（由宿主注册；返回新的监听地址）
+    rebind: RwLock<Option<RebindHook>>,
+    /// 最近一次防火墙操作结果（面板展示）
+    firewall_note: RwLock<String>,
 }
+
+/// 监听地址热重绑钩子：入参为新的服务端配置，返回实际监听地址。
+pub type RebindHook = Arc<dyn Fn(&ServerSection) -> Result<String, String> + Send + Sync>;
 
 impl Proxy {
     /// 按配置构建（单个数据源连不上不影响整体启动，错误在面板可见）。
@@ -196,6 +203,8 @@ impl Proxy {
             registry: RwLock::new(registry),
             audit: Mutex::new(VecDeque::with_capacity(AUDIT_CAPACITY)),
             started: Instant::now(),
+            rebind: RwLock::new(None),
+            firewall_note: RwLock::new(String::new()),
         };
         // 启动即把仍是明文的连接串加密写回（存盘不再有明文密码）
         match proxy.migrate_encrypt() {
@@ -437,9 +446,27 @@ impl Proxy {
         Ok(self.source_of(name).map(|s| s.view()).unwrap_or_else(|| source.view()))
     }
 
-    /// 更新服务端设置（写回配置；端口变更需重启生效）。
+    /// 最近一次防火墙操作提示（面板展示）。
+    pub fn firewall_note(&self) -> String {
+        self.firewall_note
+            .read()
+            .map(|n| n.clone())
+            .unwrap_or_default()
+    }
+
+    /// 注册监听地址热重绑钩子（宿主在启动监听后调用）。
+    pub fn set_rebind_hook(&self, hook: RebindHook) {
+        if let Ok(mut slot) = self.rebind.write() {
+            *slot = Some(hook);
+        }
+    }
+
+    /// 更新服务端设置（端口/远程访问变更会立即热重绑监听，无需重启）。
     pub fn update_server(&self, patch: ServerPatch) -> Result<ServerSection, String> {
-        let mut next = self.server_config();
+        let old = self.server_config();
+        let old_port = old.port;
+        let old_allow_remote = old.allow_remote;
+        let mut next = old;
         if let Some(port) = patch.port {
             if port == 0 {
                 return Err("端口必须大于 0".into());
@@ -465,6 +492,30 @@ impl Proxy {
         }
         *self.server.write().map_err(|_| "状态锁异常".to_string())? = next.clone();
         self.save_config()?;
+        // 端口/远程访问变化 → 立即重绑监听（失败则返回错误，保留旧监听）
+        if next.port != old_port || next.allow_remote != old_allow_remote {
+            let hook = self.rebind.read().ok().and_then(|h| h.clone());
+            if let Some(hook) = hook {
+                let addr = hook(&next)?;
+                dhrust::info!("监听已热切换：{addr}");
+            }
+        }
+        // 远程访问开关 → 自动放行/撤销本机防火墙端口（失败只记提示，不阻断）
+        if next.allow_remote != old_allow_remote || next.port != old_port {
+            let note = match dhrust::sys::firewall::ensure("PekRDbProxy", next.allow_remote, next.port) {
+                Ok(msg) => {
+                    dhrust::info!("防火墙：{msg}");
+                    msg
+                }
+                Err(e) => {
+                    dhrust::warn!("防火墙自动放行失败：{e}");
+                    format!("防火墙未自动放行：{e}")
+                }
+            };
+            if let Ok(mut slot) = self.firewall_note.write() {
+                *slot = note;
+            }
+        }
         dhrust::info!("服务端设置已保存（端口 {}，鉴权 {}）", next.port, next.web_auth_level);
         Ok(next)
     }

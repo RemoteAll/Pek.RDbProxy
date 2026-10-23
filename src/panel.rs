@@ -197,6 +197,7 @@ fn status(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
             "webUserName": server.web_user_name,
             "webAuthLevel": server.web_auth_level,
             "defaultPassword": proxy.uses_default_password(),
+            "firewallNote": proxy.firewall_note(),
         },
         "sources": sources,
     }))
@@ -332,15 +333,15 @@ fn save_server(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
         auth_level: body.get("authLevel").and_then(Value::as_str).map(str::to_string),
         allow_remote: body.get("allowRemote").and_then(Value::as_bool),
     };
-    let old_port = proxy.server_config().port;
-    let old_allow_remote = proxy.server_config().allow_remote;
     match proxy.update_server(patch) {
         Ok(server) => ok(json!({
             "port": server.port,
             "webUserName": server.web_user_name,
             "webAuthLevel": server.web_auth_level,
             "allowRemote": server.allow_remote,
-            "restartRequired": server.port != old_port || server.allow_remote != old_allow_remote,
+            "rebound": format!("{}:{}", server.host, server.port),
+            "restartRequired": false,
+            "firewallNote": proxy.firewall_note(),
         })),
         Err(e) => fail(400, &e),
     }

@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use dhrust::logs::LogLevel;
-use dhrust::net::http::{HttpServer, HttpServerOptions};
+use dhrust::net::http::HttpServerOptions;
+use dhrust::net::listener::Listener;
 
 use pek_rdbproxy::proxy::{Proxy, ServerPatch};
 use pek_rdbproxy::{VERSION, base_dir, config, panel, service};
@@ -365,51 +366,118 @@ fn run_command(base: std::path::PathBuf) -> i32 {
 
     let host = cfg.server.host.clone();
     let port = cfg.server.port;
-    let address = format!("{host}:{port}");
 
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-        Ok(runtime) => runtime,
+    let handler = panel::build_router(Arc::clone(&proxy)).into_handler();
+    let options = HttpServerOptions {
+        thread_per_connection: true,
+        ..Default::default()
+    };
+    let address = bind_address(&host, cfg.server.allow_remote, port);
+    let listener = match Listener::bind(&address, "rdbproxy-web", handler, options) {
+        Ok(listener) => listener,
         Err(e) => {
-            eprintln!("创建运行时失败：{e}");
+            eprintln!("监听失败（{address}）：{e}");
             return 1;
         }
     };
+    let local = listener.addr().to_string();
+    println!("Pek.RDbProxy v{VERSION} 已启动：http://{local}");
+    println!("面板：http://{local}/");
+    println!(
+        "数据源：{}（{}）",
+        proxy.source_count(),
+        proxy.source_names().join(", ")
+    );
+    println!(
+        "项目侧连接串：Server=http://{local};Database=<Name>;Password=<Token>;provider=network"
+    );
 
-    runtime.block_on(async move {
-        let server = match HttpServer::bind(address.as_str()).await {
-            Ok(server) => server,
-            Err(e) => {
-                eprintln!("监听失败（{address}）：{e}");
-                return 1;
+    // 监听热重绑：面板改端口/远程访问后立即切换，无需重启进程
+    let slot = Arc::new(std::sync::Mutex::new(Some(listener)));
+    let current = Arc::new(std::sync::Mutex::new(local.clone()));
+    {
+        let slot = Arc::clone(&slot);
+        let current = Arc::clone(&current);
+        let hook_proxy = Arc::clone(&proxy);
+        proxy.set_rebind_hook(Arc::new(move |server: &pek_rdbproxy::config::ServerSection| {
+            let new_addr = bind_address(&server.host, server.allow_remote, server.port);
+            let old_addr = current
+                .lock()
+                .map(|a| a.clone())
+                .unwrap_or_else(|_| String::new());
+            if new_addr == old_addr {
+                return Ok(new_addr);
             }
-        };
-        let local = server
-            .local_addr()
-            .map(|addr| addr.to_string())
-            .unwrap_or_else(|_| address.clone());
-        let router = panel::build_router(Arc::clone(&proxy));
-        println!("Pek.RDbProxy v{VERSION} 已启动：http://{local}");
-        println!("面板：http://{local}/");
-        println!(
-            "数据源：{}（{}）",
-            proxy.source_count(),
-            proxy.source_names().join(", ")
-        );
-        println!(
-            "项目侧连接串：Server=http://{local};Database=<Name>;Password=<Token>;provider=network"
-        );
+            // 先释放旧监听（同端口改绑地址时必须先关）
+            if let Ok(mut guard) = slot.lock()
+                && let Some(old) = guard.take()
+            {
+                old.shutdown();
+            }
+            let build = || {
+                let handler = panel::build_router(Arc::clone(&hook_proxy)).into_handler();
+                let options = HttpServerOptions {
+                    thread_per_connection: true,
+                    ..Default::default()
+                };
+                (handler, options)
+            };
+            let (handler, options) = build();
+            match Listener::bind_with_retry(
+                &new_addr,
+                "rdbproxy-web",
+                handler,
+                options,
+                10,
+                std::time::Duration::from_millis(300),
+            ) {
+                Ok(listener) => {
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = Some(listener);
+                    }
+                    if let Ok(mut cur) = current.lock() {
+                        *cur = new_addr.clone();
+                    }
+                    Ok(new_addr)
+                }
+                Err(e) => {
+                    // 回滚到原监听，保证面板仍可用
+                    let (handler, options) = build();
+                    if let Ok(listener) = Listener::bind_with_retry(
+                        &old_addr,
+                        "rdbproxy-web",
+                        handler,
+                        options,
+                        10,
+                        std::time::Duration::from_millis(300),
+                    ) && let Ok(mut guard) = slot.lock()
+                    {
+                        *guard = Some(listener);
+                    }
+                    Err(format!("新地址 {new_addr} 绑定失败：{e}（已恢复 {old_addr}）"))
+                }
+            }
+        }));
+    }
 
-        // 每连接一线程：SQL 是同步阻塞调用，独立线程不会互相拖慢
-        let options = HttpServerOptions {
-            thread_per_connection: true,
-            ..Default::default()
-        };
-        if let Err(e) = server.serve_with(router.into_handler(), options).await {
-            eprintln!("服务异常退出：{e}");
-            return 1;
+    // 主线程常驻（监听在独立线程里跑；服务停止时由 SCM / systemd 终止）
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
+}
+
+/// 绑定地址：允许远程时绑通配地址，否则只绑回环。
+fn bind_address(host: &str, allow_remote: bool, port: u16) -> String {
+    if allow_remote {
+        let host = host.trim();
+        if host.is_empty() || host == "127.0.0.1" {
+            format!("0.0.0.0:{port}")
+        } else {
+            format!("{host}:{port}")
         }
-        0
-    })
+    } else {
+        format!("127.0.0.1:{port}")
+    }
 }
 
 /// `Update/` 目录监视：静置 10 秒后原子替换自身并退出（由服务管理器 / 星尘拉起新版本）。
