@@ -931,8 +931,11 @@ function loadSettings() {
       <tr>
         <td>允许远程访问</td>
         <td>
-          <label class="toggle">
-            <input type="checkbox" id="s-remote" ${s.allowRemote ? 'checked' : ''}><span class="track"><span class="thumb"></span></span>
+          <label class="toggle-wrap">
+            <span class="toggle">
+              <input type="checkbox" id="s-remote" ${s.allowRemote ? 'checked' : ''} onchange="markDirty(this)"><span class="track"><span class="thumb"></span></span>
+            </span>
+            <span class="state" id="s-remote-state">${s.allowRemote ? '已开启' : '已关闭'}</span>
           </label>
         </td>
         <td>关闭时只接受本机回环请求。开启后需<b>重启服务</b>才生效，且需自行在系统防火墙放行端口：<br>
@@ -943,8 +946,11 @@ function loadSettings() {
       <tr>
         <td>面板仅限本机</td>
         <td>
-          <label class="toggle">
-            <input type="checkbox" id="s-panel-local" ${s.panelLocalOnly !== false ? 'checked' : ''}><span class="track"><span class="thumb"></span></span>
+          <label class="toggle-wrap">
+            <span class="toggle">
+              <input type="checkbox" id="s-panel-local" ${s.panelLocalOnly !== false ? 'checked' : ''} onchange="markDirty(this)"><span class="track"><span class="thumb"></span></span>
+            </span>
+            <span class="state" id="s-panel-local-state">${s.panelLocalOnly !== false ? '已开启' : '已关闭'}</span>
           </label>
         </td>
         <td>开启（推荐）时别的机器<b>打不开面板</b>，只能用令牌访问 <span class="font-mono">/Db/*</span> 查数据——开发人员看不到真实连接串、也改不了字段策略。<br>
@@ -991,6 +997,14 @@ function loadSettings() {
     </table>
   </div>`;
   $('panel-settings').innerHTML = html;
+}
+
+/* 开关变化：更新文字并提示需要保存（避免"勾了没反应"的误解） */
+function markDirty(el) {
+  const map = { 's-remote': 's-remote-state', 's-panel-local': 's-panel-local-state' };
+  const state = $(map[el.id]);
+  if (state) state.textContent = el.checked ? '已开启' : '已关闭';
+  toast('已修改，点下方「保存设置」生效', 'info');
 }
 
 async function saveSettings() {
