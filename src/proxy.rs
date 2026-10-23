@@ -190,13 +190,51 @@ impl Proxy {
             sources.push(Arc::new(open_source(base, section)?));
         }
         let registry = Registry::rebuild(sources)?;
-        Ok(Self {
+        let proxy = Self {
             base: base.to_path_buf(),
             server: RwLock::new(config.server.clone()),
             registry: RwLock::new(registry),
             audit: Mutex::new(VecDeque::with_capacity(AUDIT_CAPACITY)),
             started: Instant::now(),
-        })
+        };
+        // 启动即把仍是明文的连接串加密写回（存盘不再有明文密码）
+        match proxy.migrate_encrypt() {
+            Ok(true) => dhrust::info!("连接串已加密写回 Config/Proxy.toml（密钥：Config/.key）"),
+            Ok(false) => {}
+            Err(e) => dhrust::warn!("连接串加密迁移失败（本次仍可运行）：{e}"),
+        }
+        Ok(proxy)
+    }
+
+    /// 把配置文件里仍是明文的连接串加密并写回（幂等；返回是否发生了变更）。
+    pub fn migrate_encrypt(&self) -> Result<bool, String> {
+        let pending: Vec<(usize, String)> = {
+            let registry = self.registry.read().map_err(|_| "状态锁异常".to_string())?;
+            registry
+                .sources
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| !dhrust::secret::is_encrypted(&s.section.connection))
+                .map(|(i, s)| (i, s.section.connection.clone()))
+                .collect()
+        };
+        if pending.is_empty() {
+            return Ok(false);
+        }
+        let mut registry = self.registry.write().map_err(|_| "状态锁异常".to_string())?;
+        let mut sources = registry.sources.clone();
+        for (index, connection) in pending {
+            let Some(source) = sources.get(index).cloned() else {
+                continue;
+            };
+            let mut section = source.section.clone();
+            section.connection = encrypt_connection(&self.base, &connection)?;
+            sources[index] = with_section(&source, section);
+        }
+        *registry = Registry::rebuild(sources)?;
+        drop(registry);
+        self.save_config()?;
+        Ok(true)
     }
 
     /// 程序基目录。
@@ -245,21 +283,24 @@ impl Proxy {
             .ok_or_else(|| format!("数据源不存在：{name}"))
     }
 
-    /// 取某数据源的**完整连接串**（面板「编辑」回填用）。
+    /// 取某数据源的**完整连接串**（面板「编辑」回填用，已解密为明文）。
     ///
     /// 仅供已鉴权的面板接口调用；面板列表/状态接口仍只返回脱敏值。
     pub fn source_connection(&self, name: &str) -> Result<String, String> {
-        let registry = self.registry.read().map_err(|_| "状态锁异常".to_string())?;
-        let index = registry
-            .by_name
-            .get(&name.trim().to_ascii_lowercase())
-            .copied()
-            .ok_or_else(|| format!("数据源不存在：{name}"))?;
-        registry
-            .sources
-            .get(index)
-            .map(|s| s.section.connection.clone())
-            .ok_or_else(|| format!("数据源不存在：{name}"))
+        let stored = {
+            let registry = self.registry.read().map_err(|_| "状态锁异常".to_string())?;
+            let index = registry
+                .by_name
+                .get(&name.trim().to_ascii_lowercase())
+                .copied()
+                .ok_or_else(|| format!("数据源不存在：{name}"))?;
+            registry
+                .sources
+                .get(index)
+                .map(|s| s.section.connection.clone())
+                .ok_or_else(|| format!("数据源不存在：{name}"))?
+        };
+        resolve_connection(&stored)
     }
 
     /// 运行时长（秒）。
@@ -314,6 +355,9 @@ impl Proxy {
         if section.token.trim().is_empty() {
             return Err("令牌不能为空（用 -token 生成，或面板「生成」）".into());
         }
+        // 先验证明文可解，再转成磁盘形态（enc:v1: 密文）保存
+        resolve_connection(&section.connection)?;
+        section.connection = encrypt_connection(&self.base, &section.connection)?;
 
         let source = Arc::new(open_source(&self.base, &section)?);
         {
@@ -716,6 +760,59 @@ fn resolve_connection(raw: &str) -> Result<String, String> {
     }
     let key = load_key()?;
     dhrust::secret::decrypt(raw, &key).map_err(|e| format!("连接串解密失败：{e}"))
+}
+
+/// 确保本机密钥存在（不存在则生成 `Config/.key`）；`PEK_RDBPROXY_KEY` 优先。
+pub fn ensure_key(base: &Path) -> Result<[u8; 32], String> {
+    if let Ok(seed) = std::env::var("PEK_RDBPROXY_KEY")
+        && !seed.trim().is_empty()
+    {
+        return Ok(dhrust::secret::key_from_seed(seed.trim()));
+    }
+    let path = base.join("Config/.key");
+    if let Ok(seed) = std::fs::read_to_string(&path) {
+        let seed = seed.trim().to_string();
+        if !seed.is_empty() {
+            return Ok(dhrust::secret::key_from_seed(&seed));
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败：{e}"))?;
+    }
+    let seed = dhrust::random::hex(32);
+    std::fs::write(&path, &seed).map_err(|e| format!("写入密钥失败：{e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(dhrust::secret::key_from_seed(&seed))
+}
+
+/// 把连接串转成**磁盘形态**（明文 → `enc:v1:` 密文；已是密文则原样）。
+pub fn encrypt_connection(base: &Path, raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() || dhrust::secret::is_encrypted(raw) {
+        return Ok(raw.to_string());
+    }
+    let key = ensure_key(base)?;
+    dhrust::secret::encrypt(raw, &key).map_err(|e| format!("连接串加密失败：{e}"))
+}
+
+/// 用新配置快照替换数据源（保留统计与已打开连接）。
+fn with_section(source: &Arc<DataSource>, section: DatabaseSection) -> Arc<DataSource> {
+    Arc::new(DataSource {
+        section,
+        name: source.name.clone(),
+        description: source.description.clone(),
+        token: source.token.clone(),
+        read_only: AtomicBool::new(source.read_only.load(Ordering::Relaxed)),
+        dal: source.dal.clone(),
+        open_error: source.open_error.clone(),
+        kind: source.kind.clone(),
+        connection_masked: source.connection_masked.clone(),
+        stat: DbStat::default(),
+    })
 }
 
 /// 读取本机密钥（环境变量 `PEK_RDBPROXY_KEY` 优先，其次 `Config/.key`）。

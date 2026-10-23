@@ -46,7 +46,7 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
 
     // ── WAF：所有带网页的项目必须接；`/Db` 是机器协议（SQL 文本、无浏览器 UA），必须豁免
     let mut waf_config = pek_rwaf::WafConfig::admin_api();
-    waf_config.skip_attack_prefixes = vec!["/Db".to_string()];
+    waf_config.skip_attack_prefixes = vec!["/Db".to_string(), "/api/upgrade".to_string()];
     let waf = pek_rwaf::Waf::load_with_default(proxy.base(), waf_config);
     waf.set_forced_skip_bot_prefixes(vec!["/Db".to_string()]);
     router.use_middleware(waf.middleware());
@@ -64,6 +64,7 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     router.map_post("/api/datasource/delete", guard(Arc::clone(&proxy), delete_source));
     router.map_post("/api/readonly", guard(Arc::clone(&proxy), set_read_only));
     router.map_post("/api/server", guard(Arc::clone(&proxy), save_server));
+    router.map_post("/api/upgrade", guard(Arc::clone(&proxy), upgrade));
 
     // ── 数据库代理协议（对齐 C# `DbController`；鉴权走各数据源令牌）
     router.map_post("/Db/{action}", db_call(Arc::clone(&proxy), "POST"));
@@ -253,6 +254,48 @@ fn delete_source(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
         Ok(()) => ok(json!({ "name": name })),
         Err(e) => fail(400, &e),
     }
+}
+
+/// `POST /api/upgrade`：上传新程序到 `Update/`（约 10 秒后由热升级监视器原子替换并重启）。
+fn upgrade(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    const MAX_SIZE: usize = 64 * 1024 * 1024;
+    let body = &ctx.req.body;
+    if body.is_empty() {
+        return fail(400, "没有收到文件内容（请选择程序文件再上传）");
+    }
+    if body.len() > MAX_SIZE {
+        return fail(413, "文件过大（上限 64MB）");
+    }
+    if body.len() < 4096 {
+        return fail(400, "文件太小，不是有效的可执行程序");
+    }
+    let is_pe = body[0] == b'M' && body[1] == b'Z';
+    let is_elf = body.starts_with(b"\x7fELF");
+    if !is_pe && !is_elf {
+        return fail(400, "不是有效的可执行文件（需要 PE 或 ELF 文件头）");
+    }
+    let dir = proxy.base().join("Update");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return fail(500, &format!("创建 Update 目录失败：{e}"));
+    }
+    let name = format!(
+        "pek-rdbproxy-{}.new",
+        chrono::Local::now().format("%Y%m%d%H%M%S")
+    );
+    let path = dir.join(&name);
+    if let Err(e) = std::fs::write(&path, body) {
+        return fail(500, &format!("写入失败：{e}"));
+    }
+    dhrust::info!(
+        "收到在线升级包：{}（{} 字节），约 10 秒后自动替换并重启",
+        name,
+        body.len()
+    );
+    ok(json!({
+        "file": name,
+        "bytes": body.len(),
+        "note": "已写入 Update/，约 10 秒后自动替换并重启（面板会短暂断开）"
+    }))
 }
 
 /// `POST /api/readonly`：切换只读（立即持久化）。

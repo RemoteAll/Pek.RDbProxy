@@ -16,3 +16,9 @@ Config/.key
 
 # 运行中升级暂存
 /Update
+
+# 打包产物（dist/ 只保留在本地，不进仓库）
+/dist
+/dist-*
+*.zip
+*.tar.gz

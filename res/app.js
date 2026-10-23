@@ -607,6 +607,15 @@ function loadSettings() {
   </div>
 
   <div class="card glass-card">
+    <h2>⬆ 在线升级</h2>
+    <div class="form-inline" style="margin-bottom:8px">
+      <input type="file" id="up-file" accept=".exe,application/octet-stream" style="max-width:320px">
+      <button class="btn btn-primary btn-sm" onclick="uploadUpgrade()">上传并升级</button>
+    </div>
+    <div class="form-desc">选择新的程序文件（Windows 为 <span class="font-mono">pek-rdbproxy.exe</span>，Linux 为无扩展名二进制）上传；写入 <span class="font-mono">Update/</span> 后约 10 秒自动替换并重启，期间面板短暂断开属正常。也可以直接把文件拷进 <span class="font-mono">Update/</span> 目录。</div>
+  </div>
+
+  <div class="card glass-card">
     <h2>ℹ 运行信息</h2>
     <table class="info-table">
       <tr><td>程序</td><td>Pek.RDbProxy v${esc(status.version || '0.1.0')}</td></tr>
@@ -632,6 +641,24 @@ async function saveSettings() {
     if (r.restartRequired) toast('已保存；端口变更需重启服务后生效', 'info');
     else toast('已保存', 'success');
     loadStatus();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+/* ── 在线升级 ─────────────────────────────────────── */
+
+async function uploadUpgrade() {
+  const inp = $('up-file');
+  if (!inp || !inp.files || !inp.files.length) { toast('请先选择程序文件', 'error'); return; }
+  const f = inp.files[0];
+  if (!window.confirm(`上传并升级到 ${f.name}（${Math.round(f.size / 1024)} KB）？升级期间面板会短暂断开。`)) return;
+  try {
+    const headers = {};
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const r = await fetch('/api/upgrade', { method: 'POST', headers, body: f });
+    const el = r.headers.get('X-Elapsed-Ms'); if (el) setSrvElapsed(el);
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error((j && j.message) || '上传失败');
+    toast((j.data && j.data.note) || '已上传，即将重启', 'success');
   } catch (e) { toast(e.message, 'error'); }
 }
 

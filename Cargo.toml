@@ -1,6 +1,6 @@
 [package]
 name = "pek-rdbproxy"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "本地数据库代理：项目侧只见代理地址与令牌，真实连接串只留在代理端"
 license = "MIT"
@@ -22,7 +22,7 @@ pek-rcode = { path = "../Pek.RCode", default-features = false, features = [
     "driver-mysql",
     "driver-postgresql",
     "driver-sqlserver",
-    "tls-native",
+    "tls-rustls",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
