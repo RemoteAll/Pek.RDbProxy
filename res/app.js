@@ -275,7 +275,7 @@ function renderOverview() {
   <div class="card glass-card">
     <h2>🗄 数据源
       <span style="margin-left:auto;display:flex;gap:8px">
-        <button class="btn btn-primary btn-sm" onclick="editSource(null)">+ 新增数据源</button>
+        ${canPerm('sources') ? '<button class="btn btn-primary btn-sm" onclick="editSource(null)">+ 新增数据源</button>' : ''}
         <button class="btn btn-secondary btn-sm" onclick="loadStatus()">刷新</button>
       </span>
     </h2>`;
@@ -303,10 +303,12 @@ function renderOverview() {
         </table>
         <div class="ds-conn">${esc(s.connection)}</div>
         <div class="ds-actions">
+          ${canPerm('sources') ? `
           <button class="btn btn-primary btn-sm" onclick="copyProjectConn('${esc(s.name)}')">复制项目连接串</button>
           <button class="btn btn-secondary btn-sm" onclick="editSource('${esc(s.name)}')">编辑</button>
           <button class="btn btn-ghost btn-sm" onclick="toggleReadOnly('${esc(s.name)}', ${!s.readOnly})">${s.readOnly ? '解除只读' : '设为只读'}</button>
-          <button class="btn btn-ghost btn-sm text-red" onclick="removeSource('${esc(s.name)}')">删除</button>
+          <button class="btn btn-ghost btn-sm text-red" onclick="removeSource('${esc(s.name)}')">删除</button>`
+          : '<span class="text-muted" style="font-size:11px">只读视图 —— 需要「数据源管理」权限才能编辑、取令牌或复制连接串</span>'}
         </div>
       </div>`;
     }

@@ -83,11 +83,12 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     // ── 面板 API（需鉴权 + 页签权限，见 `guard`）
     router.map_get("/api/status", guard(Arc::clone(&proxy), "", status));
     router.map_get("/api/audit", guard(Arc::clone(&proxy), "audit", audit));
-    router.map_post("/api/datasource", guard(Arc::clone(&proxy), "overview", save_source));
-    router.map_post("/api/datasource/get", guard(Arc::clone(&proxy), "overview", get_source));
-    router.map_post("/api/datasource/token", guard(Arc::clone(&proxy), "overview", get_token));
-    router.map_post("/api/datasource/delete", guard(Arc::clone(&proxy), "overview", delete_source));
-    router.map_post("/api/readonly", guard(Arc::clone(&proxy), "overview", set_read_only));
+    // 数据源写操作 + 凭据（令牌 / 真实连接串）需 `sources` 权限；只读概览只需登录
+    router.map_post("/api/datasource", guard(Arc::clone(&proxy), "sources", save_source));
+    router.map_post("/api/datasource/get", guard(Arc::clone(&proxy), "sources", get_source));
+    router.map_post("/api/datasource/token", guard(Arc::clone(&proxy), "sources", get_token));
+    router.map_post("/api/datasource/delete", guard(Arc::clone(&proxy), "sources", delete_source));
+    router.map_post("/api/readonly", guard(Arc::clone(&proxy), "sources", set_read_only));
     router.map_post("/api/server", guard(Arc::clone(&proxy), "settings", save_server));
     router.map_post("/api/upgrade", guard(Arc::clone(&proxy), "settings", upgrade));
     router.map_get("/api/fields", guard(Arc::clone(&proxy), "fields", list_fields));
@@ -306,7 +307,8 @@ fn require(proxy: &Proxy, ctx: &Ctx) -> Result<Principal, HttpResponse> {
     let level = AuthLevel::parse(&server.web_auth_level);
     let ip = client_ip(ctx);
     match level {
-        AuthLevel::None => Ok(Principal {
+        // `None` 只对**本机**免鉴权：已允许远程访问时，远程仍须登录（防误配成全员裸奔）
+        AuthLevel::None if is_loopback(&ip) => Ok(Principal {
             user: "anonymous".into(),
             perms: crate::admin::all_keys(),
             builtin: true,

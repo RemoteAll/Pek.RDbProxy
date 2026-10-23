@@ -30,8 +30,11 @@ pub struct ServerSection {
     pub port: u16,
     /// 是否允许非回环来源
     pub allow_remote: bool,
-    /// 面板仅限本机访问（默认 true）：远程只能走 `/Db/*` 令牌协议，打不开面板
-    #[serde(default = "default_true")]
+    /// 面版仅限本机访问（默认 false）
+    ///
+    /// - `false`（默认）：面板可远程打开，**靠账号 + 页签权限**控制能看到什么；
+    /// - `true`：面板只在回环打开，远程只能用令牌走 `/Db/*`（最高锁死级别）。
+    #[serde(default)]
     pub panel_local_only: bool,
     /// 面板用户名
     pub web_user_name: String,
@@ -49,17 +52,13 @@ impl Default for ServerSection {
             host: "127.0.0.1".to_string(),
             port: 5599,
             allow_remote: false,
-            panel_local_only: true,
+            panel_local_only: false,
             web_user_name: "admin".to_string(),
             web_password_hash: String::new(),
             web_auth_level: "LocalOnly".to_string(),
             jwt_secret: String::new(),
         }
     }
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// `[[Databases]]` 段。

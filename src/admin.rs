@@ -21,7 +21,8 @@ const DB_FILE: &str = "admin.db";
 
 /// 可授予的页签权限（顺序即展示顺序）。
 pub const ALL_PERMISSIONS: &[(&str, &str)] = &[
-    ("overview", "数据源与概览"),
+    ("overview", "数据源与概览（只读）"),
+    ("sources", "数据源管理（增删改 / 令牌 / 真实连接串）"),
     ("fields", "字段安全（表管理）"),
     ("audit", "SQL 审计"),
     ("settings", "服务设置与升级"),
