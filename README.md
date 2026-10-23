@@ -100,6 +100,14 @@ var list = User.FindAll();   // 底层自动转成 /Db/Query、/Db/Execute、/Db
   所以 XCode 实体 CRUD、`Count()`、插入取自增都能走通。
 - **不要**把 SQLite/MySQL 的原始连接串写到项目里 —— 那样等于绕过代理（字段策略、审计、令牌都不生效）。
 
+**已实测（不是"源码里应该有"）**：
+
+| 端 | 怎么测 | 结果 |
+|---|---|---|
+| C# | DH.NCode 的 `DbClient` 连本代理（`tools/csharp-network-check`，`dotnet run -- http://127.0.0.1:5599 demo <令牌>`） | `Login` → `DbType=SQLite`；`Query` → 1 行 `col0=1 col1=hello`；`QueryCount` → 正常 |
+| Rust | `Dal::open("…;provider=network")` + `session.query(…)`（`tests/proxy_e2e.rs::dal_open_with_network_provider_executes`） | 1 行，`Name=hello` |
+| 代理侧日志 | — | `db=demo op=Login ok` / `op=Query ok` / `op=QueryCount ok` |
+
 令牌在面板「新增数据源」时自动生成，或手工填写；代理端连接串支持 `enc:v1:` 加密值（`-encrypt <明文>`）。
 
 ## 配置 `Config/Proxy.toml`

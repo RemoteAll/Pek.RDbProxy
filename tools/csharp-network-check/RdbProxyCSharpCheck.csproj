@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>RdbProxyCSharpCheck</AssemblyName>
+    <!-- DH.NCode 已构建产物目录；其它机器用 -p:DHNCodeBin=... 覆盖 -->
+    <DHNCodeBin Condition="'$(DHNCodeBin)' == ''">G:\Code\Pek.FrameWork\DH.NCode\Bin\net8.0</DHNCodeBin>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="DH.NCode">
+      <HintPath>$(DHNCodeBin)\DH.NCode.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="DH.NCore">
+      <HintPath>$(DHNCodeBin)\DH.NCore.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

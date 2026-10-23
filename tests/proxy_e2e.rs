@@ -319,6 +319,42 @@ fn field_policy_masks_and_blocks_columns() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// `provider=network` 真实可用：`Dal::open` + 会话查询经代理转发到 SQLite。
+#[test]
+fn dal_open_with_network_provider_executes() {
+    use pek_rdbproxy::policy::{Action, Rule};
+
+    let base = temp_dir("network-dal");
+    let proxy = build_proxy(&base, true, "");
+    // 默认严格白名单：先允许本测试要读的两列
+    let mut policy = proxy.policy_snapshot();
+    for column in ["Id", "Name"] {
+        policy.upsert(Rule {
+            db: "demo".into(),
+            column: column.into(),
+            action: Action::Allow,
+            note: String::new(),
+        });
+    }
+    proxy.save_policy(policy).expect("保存策略");
+    let addr = serve(Arc::clone(&proxy));
+
+    let conn = format!("Server=http://{addr};Database=demo;Password=tk-test-123456;provider=network");
+    let dal = Dal::open(&conn).expect("network 连接串应可打开");
+    let mut session = dal.open_session().expect("应能建会话");
+    let set = session
+        .query("SELECT Id, Name FROM t", &[])
+        .expect("经代理查询应成功");
+    assert_eq!(set.rows.len(), 1, "应查到 1 行");
+    assert_eq!(
+        set.rows[0].get_by_name("Name").and_then(|v| v.as_str()),
+        Some("hello"),
+        "值应原样返回"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// 首启默认账号：`admin/admin` 本身不满足强度规则，但必须能建（登录后立刻强制升级）。
 #[test]
 fn default_account_is_created_even_though_admin_is_weak() {

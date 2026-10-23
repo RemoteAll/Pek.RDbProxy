@@ -1,0 +1,53 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "RdbProxyCSharpCheck/1.0.0": {
+        "dependencies": {
+          "DH.NCode": "4.25.2026.906",
+          "DH.NCore": "4.25.2026.906"
+        },
+        "runtime": {
+          "RdbProxyCSharpCheck.dll": {}
+        }
+      },
+      "DH.NCode/4.25.2026.906": {
+        "runtime": {
+          "DH.NCode.dll": {
+            "assemblyVersion": "4.25.2026.906",
+            "fileVersion": "4.25.2026.906"
+          }
+        }
+      },
+      "DH.NCore/4.25.2026.906": {
+        "runtime": {
+          "DH.NCore.dll": {
+            "assemblyVersion": "4.25.2026.906",
+            "fileVersion": "4.25.2026.906"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "RdbProxyCSharpCheck/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "DH.NCode/4.25.2026.906": {
+      "type": "reference",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "DH.NCore/4.25.2026.906": {
+      "type": "reference",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}
