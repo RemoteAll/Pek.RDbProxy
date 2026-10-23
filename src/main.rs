@@ -45,6 +45,10 @@ fn main() {
                 | "-help"
                 | "--help"
                 | "-h"
+                | "-s"
+                | "--service"
+                | "-run"
+                | "--run"
         )
     );
     dhrust::logs::init_console_and_file(base.join("Log"), !text_only, LogLevel::Info);
@@ -70,7 +74,25 @@ fn main() {
         Some("-stop" | "--stop") => service_command(&base, "stop"),
         Some("-restart" | "--restart") => service_command(&base, "restart"),
         Some("-RegisterAgent" | "--RegisterAgent") => register_agent_command(&base),
-        Some("-run" | "--run") | None => run_command(base),
+        // `-s` 是服务管理器（dhrust service）注册时使用的服务模式参数；必须与服务路径一致，
+        // 否则 SCM 拉起的进程会因"未知参数"直接退出 → StartService 1053。
+        Some("-run" | "--run" | "-s" | "--service") | None => {
+            // 以 Windows 服务方式被 SCM 拉起时走服务分发器（必须尽快向 SCM 报 RUNNING，
+            // 否则 StartService 会 1053 超时）；非服务环境由库内部自动回退前台运行。
+            #[cfg(windows)]
+            {
+                let b = base.clone();
+                let run = move || {
+                    run_command(b.clone());
+                };
+                dhrust::service::windows::run_as_service("PekRDbProxy", || {}, run);
+                0
+            }
+            #[cfg(not(windows))]
+            {
+                run_command(base)
+            }
+        }
         Some(other) => {
             eprintln!("未知参数：{other}（用 -help 查看用法）");
             2
@@ -381,14 +403,15 @@ fn run_command(base: std::path::PathBuf) -> i32 {
         }
     };
     let local = listener.addr().to_string();
-    println!("Pek.RDbProxy v{VERSION} 已启动：http://{local}");
-    println!("面板：http://{local}/");
-    println!(
+    // 服务模式下没有控制台：一律走日志，避免写 stdout 失败导致启动中断
+    dhrust::info!("Pek.RDbProxy v{VERSION} 已启动：http://{local}");
+    dhrust::info!("面板：http://{local}/");
+    dhrust::info!(
         "数据源：{}（{}）",
         proxy.source_count(),
         proxy.source_names().join(", ")
     );
-    println!(
+    dhrust::info!(
         "项目侧连接串：Server=http://{local};Database=<Name>;Password=<Token>;provider=network"
     );
 

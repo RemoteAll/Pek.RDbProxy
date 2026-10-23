@@ -1,6 +1,6 @@
 ﻿param(
     [string]$Source = "",
-    [string]$Target = "C:\PekRDbProxy",
+    [string]$Target = "",
     [switch]$RegisterAgent,
     [switch]$SkipService
 )
@@ -10,11 +10,17 @@
 #   2) 注册并启动 Windows 服务（PekRDbProxy）
 #   3) -RegisterAgent：注册到星尘（影子模式，之后升级=直接覆盖程序文件即自动重启）
 #
+# ⚠ 必须以 `.\` 方式执行（PowerShell 不从当前目录加载命令）：
+#   .\install.ps1
+# ⚠ 需要以管理员身份运行 PowerShell（注册服务 / 加防火墙规则）
+#
 # 用法：
 #   .\install.ps1                          # 用同目录的 pek-rdbproxy.exe 安装到 C:\PekRDbProxy
 #   .\install.ps1 -Target D:\Apps\RDbProxy # 自定义安装目录
 #   .\install.ps1 -RegisterAgent           # 同时注册到星尘
 #   .\install.ps1 -Source .\pek-rdbproxy.exe
+# 执行策略受限时：
+#   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 $ErrorActionPreference = 'Stop'
 $exeName = 'pek-rdbproxy.exe'
@@ -26,6 +32,10 @@ if (-not (Test-Path $Source)) {
     exit 1
 }
 $Source = (Resolve-Path $Source).Path
+
+# 默认安装到**脚本所在目录**（解压目录=安装目录，避免凭空出现 C:\PekRDbProxy）
+if (-not $Target) { $Target = $PSScriptRoot }
+$Target = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Target)
 
 Write-Host "== Pek.RDbProxy 安装 ==" -ForegroundColor Cyan
 Write-Host "  源程序：$Source"
@@ -42,16 +52,20 @@ if ($svc) {
 }
 Get-Process 'pek-rdbproxy' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
-# 2) 复制程序
+# 2) 复制程序（已在目标目录则跳过）
 if (-not (Test-Path $Target)) { New-Item -ItemType Directory -Path $Target -Force | Out-Null }
 $dest = Join-Path $Target $exeName
-Write-Host "  复制程序…"
-for ($i = 0; $i -lt 20; $i++) {
-    try { Copy-Item -Path $Source -Destination $dest -Force; break }
-    catch {
-        if ($i -eq 19) { throw }
-        Start-Sleep -Milliseconds 500
+if ([IO.Path]::GetFullPath($Source) -ne [IO.Path]::GetFullPath($dest)) {
+    Write-Host "  复制程序…"
+    for ($i = 0; $i -lt 20; $i++) {
+        try { Copy-Item -Path $Source -Destination $dest -Force; break }
+        catch {
+            if ($i -eq 19) { throw }
+            Start-Sleep -Milliseconds 500
+        }
     }
+} else {
+    Write-Host "  就地安装（程序已在目标目录）"
 }
 
 # 3) 首次生成配置（不覆盖已有配置）
@@ -59,6 +73,10 @@ $config = Join-Path $Target 'Config\Proxy.toml'
 if (-not (Test-Path $config)) {
     Write-Host "  生成配置模板…"
     & $dest -init | Out-Null
+    if (-not (Test-Path $config)) {
+        Write-Host "配置生成失败：$config 不存在（请检查程序能否运行：$dest -status）" -ForegroundColor Red
+        exit 1
+    }
 } else {
     Write-Host "  保留已有配置：$config"
 }
@@ -72,7 +90,14 @@ if (-not $SkipService) {
     & $dest -start | Out-Null
     Start-Sleep -Seconds 2
     $svc = Get-Service -Name 'PekRDbProxy' -ErrorAction SilentlyContinue
-    if ($svc) { Write-Host ("  服务状态：" + $svc.Status) -ForegroundColor Green }
+    if ($svc) { Write-Host ("  服务状态：" + $svc.Status) -ForegroundColor ($(if ($svc.Status -eq 'Running') { 'Green' } else { 'Red' })) }
+    if ($svc -and $svc.Status -ne 'Running') {
+        Write-Host "  服务未能启动，最近日志：" -ForegroundColor Yellow
+        $log = Get-ChildItem (Join-Path $Target 'Log') -Filter '*.log' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($log) { Get-Content $log.FullName -Tail 8 -Encoding UTF8 | ForEach-Object { Write-Host "    $_" } }
+        Write-Host "  可直接前台运行验证：$dest" -ForegroundColor Yellow
+    }
 }
 
 # 5) 注册到星尘

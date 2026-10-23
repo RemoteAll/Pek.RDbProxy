@@ -154,6 +154,58 @@ sudo ./install.sh ./pek-rdbproxy /opt/PekRDbProxy
 
 升级过程：写入 `Update/` → 静置 10 秒 → PE/ELF 校验 → 原子替换（Windows 先改名让位）→ 退出并由服务/星尘拉起。失败会改名成 `*.failed` 并记日志。
 
+### 常见问题（FAQ）
+
+**Q1 `install.ps1 : 无法将"install.ps1"项识别为 cmdlet、函数、脚本文件…`**
+
+PowerShell 不从当前目录加载命令，必须加 `.\` 前缀：
+
+```powershell
+cd H:\Run\pek-rdbproxy
+.\install.ps1
+```
+
+若提示「禁止运行脚本」（执行策略限制）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -RegisterAgent
+```
+
+**Q2 服务注册失败 / 防火墙规则没加上**
+
+需要**管理员权限**：以管理员身份打开 PowerShell 再执行（注册 Windows 服务、调用 `netsh` 都需要）。
+
+**Q3 面板打不开 / 远程访问不通**
+
+1. 确认在跑：`Get-Service PekRDbProxy` 或 `.\pek-rdbproxy.exe -status`
+2. 本机访问 http://127.0.0.1:5599/
+3. 远程访问：面板「设置」勾选「允许远程访问」—— **即时生效，无需重启**；程序会自动用 `netsh advfirewall`（Linux 为 firewalld/ufw/iptables）放行该 TCP 端口
+4. 自动放行失败（多半是没管理员权限）时手动执行：
+   `netsh advfirewall firewall add rule name="PekRDbProxy" dir=in action=allow protocol=TCP localport=5599`
+5. 云服务器还需在**安全组**放行同一端口
+6. 对外开放前把鉴权级别设为 `Full` 并先改掉默认密码
+
+**Q4 忘记面板密码**
+
+```powershell
+.\pek-rdbproxy.exe -resetPassword "YourStrongPass1!"
+.\pek-rdbproxy.exe -restart
+```
+
+规则：≥10 位，含大写/小写/数字/符号至少三类。
+
+**Q5 登录后提示「默认密码已自动更换」**
+
+首次用 `admin/admin` 登录时，程序会按强度规则生成强密码并回写配置，新密码**只在弹窗里显示一次**。没记下就用 Q4 重置。
+
+**Q6 改端口 / 改远程访问需要重启吗？**
+
+不用。保存后立即热重绑监听，新地址绑定失败会自动回滚到原监听，面板不会断。
+
+**Q7 怎么升级**
+
+设置页「⬆ 在线升级」上传新程序；或把程序放进 `Update/` 目录；星尘托管下也可直接覆盖源程序文件。约 10 秒自动替换并重启。
+
 ## 安全
 
 - **写盘加密**：`Config/Proxy.toml` 里的连接串一律以 `enc:v1:`（AES-256-GCM）保存，密钥在 `Config/.key`（Unix 权限 600）；启动时自动把仍是明文的连接串加密迁移。
