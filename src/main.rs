@@ -313,7 +313,20 @@ fn register_agent_command(_base: &std::path::Path) -> i32 {
         );
         return 1;
     };
-    // 程序路径与工作目录由 `staragent::register` 取 `current_exe()` 及其父目录
+    // 程序路径与工作目录由 `staragent::register` 取 `current_exe()` 及其父目录。
+    // 若当前已在星尘影子目录里运行，取到的会是 shadow/…（配置/日志会跟错地方），
+    // 因此注册必须在**实际目录**执行。
+    if let Ok(exe) = std::env::current_exe() {
+        let text = exe.to_string_lossy().to_ascii_lowercase();
+        if text.contains("\\shadow\\") || text.contains("/shadow/") {
+            eprintln!(
+                "当前程序位于影子目录（{}），注册会把工作目录记成影子目录。",
+                exe.display()
+            );
+            eprintln!("请在**实际目录**里执行：<实际目录>\\pek-rdbproxy.exe -RegisterAgent");
+            return 1;
+        }
+    }
     let entry = dhrust::staragent::Entry {
         name: service::SERVICE_NAME,
         base_env: Some("PEK_RDBPROXY_BASE"),
