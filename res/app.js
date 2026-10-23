@@ -287,9 +287,79 @@ function findSource(name) {
   return (status && status.sources ? status.sources : []).find(s => s.name === name);
 }
 
+/* 各数据库类型的默认连接串模板（与 Pek.RPanlServer 同一套口径；套用后仍可继续改） */
+const DB_TEMPLATES = {
+  sqlite:     'Data Source=Data/demo.db;Provider=SQLite',
+  mysql:      'Server=127.0.0.1;Port=3306;Database=demo;Uid=root;Pwd=password;Provider=MySql;SslMode=None',
+  postgresql: 'Server=127.0.0.1;Port=5432;Database=demo;Uid=postgres;Pwd=password;Provider=PostgreSQL',
+  sqlserver:  'Server=127.0.0.1;Port=1433;Database=demo;Uid=sa;Pwd=password;Provider=SqlServer;Encrypt=false',
+  oracle:     'Server=127.0.0.1;Port=1521;ServiceName=xepdb1;Uid=system;Pwd=password;Provider=Oracle',
+  dameng:     'Server=127.0.0.1;Port=5236;Database=SYSDBA;Uid=SYSDBA;Pwd=password;Provider=DaMeng',
+  clickhouse: 'Server=127.0.0.1;Port=9000;Database=demo;Uid=default;Pwd=password;Provider=ClickHouse',
+  tdengine:   'Server=127.0.0.1;Port=6041;Database=iot;Uid=root;Pwd=taosdata;Provider=TDengine',
+  mongodb:    'Server=127.0.0.1;Port=27017;Database=demo;Uid=admin;Pwd=password;Provider=MongoDB',
+  influxdb:   'Server=127.0.0.1;Database=demo;Uid=root;Pwd=password;Provider=InfluxDB',
+  hana:       'Server=127.0.0.1;Port=30015;Uid=SYSTEM;Pwd=password;Provider=HANA',
+  firebird:   'Server=127.0.0.1;Port=3050;Database=Data/demo.fdb;Uid=SYSDBA;Pwd=masterkey;Provider=Firebird',
+  duckdb:     'Data Source=Data/demo.duckdb;Provider=DuckDB',
+  db2:        'Server=127.0.0.1;Port=50000;Database=demo;Uid=db2admin;Pwd=password;Provider=DB2',
+  access:     'Data Source=Data/demo.mdb;Provider=Access',
+  vastbase:   'Server=127.0.0.1;Port=5432;Database=demo;Uid=root;Pwd=password;Provider=VastBase',
+};
+const DB_KIND_LABELS = [
+  ['sqlite', 'SQLite（内嵌文件）'],
+  ['mysql', 'MySQL / MariaDB'],
+  ['postgresql', 'PostgreSQL（含瀚高/金仓/海量/VastBase）'],
+  ['sqlserver', 'SQL Server'],
+  ['oracle', 'Oracle'],
+  ['dameng', '达梦 DM'],
+  ['clickhouse', 'ClickHouse'],
+  ['tdengine', 'TDengine'],
+  ['mongodb', 'MongoDB'],
+  ['influxdb', 'InfluxDB'],
+  ['hana', 'SAP HANA'],
+  ['firebird', 'Firebird'],
+  ['duckdb', 'DuckDB（内嵌文件）'],
+  ['db2', 'DB2'],
+  ['access', 'Access'],
+  ['vastbase', 'VastBase'],
+];
+const DB_ALIAS = { maria: 'mysql', mariadb: 'mysql', nova: 'mysql', novadb: 'mysql', postgres: 'postgresql', pgsql: 'postgresql', npgsql: 'postgresql', highgo: 'postgresql', kingbase: 'postgresql', kingbasees: 'postgresql', vastbase: 'postgresql', mssql: 'sqlserver', sqlite3: 'sqlite', dm: 'dameng', td: 'tdengine', mongo: 'mongodb', influx: 'influxdb', sap: 'hana', fb: 'firebird' };
+
+/** 从连接串里的 provider 反推数据库类型（编辑已有数据源时预选下拉）。 */
+function dbKindFromConn(s) {
+  const m = /provider\s*=\s*([a-z0-9_.]+)/i.exec(s || '');
+  if (!m) return '';
+  const p = m[1].toLowerCase();
+  const k = DB_ALIAS[p] || p;
+  return DB_TEMPLATES[k] ? k : '';
+}
+
+/** 选中类型后套用该类型的默认连接串（仅填输入框，不保存）。 */
+function applyDbTemplate() {
+  const sel = $('f-kind');
+  const kind = sel.value;
+  const tpl = DB_TEMPLATES[kind];
+  if (!tpl) return;
+  const cur = ($('f-conn').value || '').trim();
+  const label = (sel.options[sel.selectedIndex] || {}).text || kind;
+  if (cur && !Object.values(DB_TEMPLATES).includes(cur)
+    && !window.confirm('把连接串替换为【' + label + '】的默认模板？\n\n' + tpl)) {
+    sel.value = dbKindFromConn(cur);
+    return;
+  }
+  $('f-conn').value = tpl;
+  const hint = $('f-kind-hint');
+  if (hint) hint.textContent = '已套用【' + label + '】模板：改成实际的地址/账号密码即可';
+}
+
 function editSource(name) {
   const s = name ? findSource(name) : null;
   const title = s ? '编辑数据源：' + s.name : '新增数据源';
+  const kind = s ? dbKindFromConn(s.connection) : 'sqlite';
+  const kindOptions = DB_KIND_LABELS
+    .map(([v, t]) => `<option value="${v}" ${kind === v ? 'selected' : ''}>${t}</option>`)
+    .join('');
   const body = `
     <div class="form-group">
       <label>名称（项目侧 Database=）</label>
@@ -298,9 +368,18 @@ function editSource(name) {
       <div class="form-desc">${s ? '名称是项目侧连接串里的 Database，创建后不可改' : '只用字母数字与 _-，区分业务库'}</div>
     </div>
     <div class="form-group">
+      <label>数据库类型（选中即套用该类型的默认连接串）</label>
+      <select id="f-kind" onchange="applyDbTemplate()">
+        <option value="">— 不套用模板（手工填写）—</option>
+        ${kindOptions}
+      </select>
+      <div class="form-desc" id="f-kind-hint">与 Pek.RPanlServer 同一套模板：选类型 → 自动填好连接串 → 只改地址/账号密码</div>
+    </div>
+    <div class="form-group">
       <label>连接串（Pek.RCode 格式，支持 enc:v1: 加密值）</label>
-      <textarea id="f-conn" rows="3" placeholder="${s ? '（留空 = 不改）' : 'Server=127.0.0.1;Port=3306;Database=app;Uid=root;Pwd=xxx;provider=mysql'}">${s ? '' : ''}</textarea>
-      <div class="form-desc">${s ? '当前：' + esc(s.connection) : 'SQLite 示例：Data Source=Data/demo.db;Provider=SQLite'}</div>
+      <textarea id="f-conn" rows="6" spellcheck="false" autocomplete="off"
+        placeholder="Server=127.0.0.1;Port=3306;Database=demo;Uid=root;Pwd=xxx;Provider=MySql">${s ? '' : DB_TEMPLATES.sqlite}</textarea>
+      <div class="form-desc">${s ? '当前：' + esc(s.connection) + '（留空 = 保持当前连接串不变）' : '选好类型后模板会自动填入，按实际情况改地址与账号密码'}</div>
     </div>
     <div class="form-group">
       <label>令牌（项目侧 Password=）</label>
@@ -505,6 +584,11 @@ function toggleTheme() {
 .ds-conn{margin-top:10px;padding:7px 10px;border-radius:var(--radius-sm);background:var(--surface-2);
   font-family:var(--font-mono);font-size:11px;color:var(--text-muted);word-break:break-all;line-height:1.5}
 .ds-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+#f-conn{width:100%;box-sizing:border-box;min-height:150px;padding:10px 12px;border:1px solid var(--border-default);
+  border-radius:var(--radius-md);background:var(--surface-2);color:var(--text-primary);font-family:var(--font-mono);
+  font-size:12px;line-height:1.7;outline:none;resize:vertical;word-break:break-all}
+#f-conn:focus{border-color:var(--brand-500);box-shadow:0 0 0 3px rgba(91,91,255,.25)}
+#f-kind{width:100%;box-sizing:border-box}
 `;
   document.head.appendChild(st);
 
