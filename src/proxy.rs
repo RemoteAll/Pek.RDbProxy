@@ -162,6 +162,8 @@ pub struct ServerPatch {
     pub auth_level: Option<String>,
     /// 是否允许远程
     pub allow_remote: Option<bool>,
+    /// 面板仅限本机访问
+    pub panel_local_only: Option<bool>,
 }
 
 /// 数据源注册表（整体替换，避免 sources/by_name/service 不一致）。
@@ -495,6 +497,9 @@ impl Proxy {
         }
         if let Some(allow) = patch.allow_remote {
             next.allow_remote = allow;
+        }
+        if let Some(local_only) = patch.panel_local_only {
+            next.panel_local_only = local_only;
         }
         *self.server.write().map_err(|_| "状态锁异常".to_string())? = next.clone();
         self.save_config()?;

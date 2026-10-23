@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use dhrust::net::http::{HttpOutcome, HttpResponse};
 use dhrust::net::panel_auth::{AuthLevel, bearer_token, client_ip, is_loopback};
-use dhrust::net::router::{Ctx, Router, route};
+use dhrust::net::router::{Ctx, Next, Router, route};
 use dhrust::net::static_files::StaticFiles;
 use serde_json::{Map, Value, json};
 
@@ -50,6 +50,31 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     let waf = pek_rwaf::Waf::load_with_default(proxy.base(), waf_config);
     waf.set_forced_skip_bot_prefixes(vec!["/Db".to_string()]);
     router.use_middleware(waf.middleware());
+
+    // ── 面板仅限本机（`PanelLocalOnly`，默认开）
+    //
+    // 定位：本工具给开发做本地调测，真实连接串/字段策略不能让开发人员看到或改。
+    // 所以只有 `/Db/*` 对远程开放（走数据源令牌），面板本身只接受回环访问。
+    {
+        let proxy = Arc::clone(&proxy);
+        router.use_middleware(Arc::new(move |ctx: Ctx, next: Next| {
+            let proxy = Arc::clone(&proxy);
+            Box::pin(async move {
+                let path = ctx.req.path.clone();
+                if !path.starts_with("/Db") && proxy.server_config().panel_local_only {
+                    let ip = client_ip(&ctx);
+                    if !is_loopback(&ip) {
+                        dhrust::warn!("面板被非本机访问拒绝：ip={ip} path={path}");
+                        return HttpOutcome::Response(fail(
+                            403,
+                            "面板仅限本机访问（PanelLocalOnly=true）；远程请用令牌调用 /Db/*",
+                        ));
+                    }
+                }
+                next(ctx).await
+            })
+        }));
+    }
 
     // ── 登录 / 登出（JWT）
     router.map_post("/api/login", login(Arc::clone(&proxy)));
@@ -310,6 +335,7 @@ fn status(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
             "host": server.host,
             "port": server.port,
             "allowRemote": server.allow_remote,
+            "panelLocalOnly": server.panel_local_only,
             "webUserName": server.web_user_name,
             "webAuthLevel": server.web_auth_level,
             "defaultPassword": proxy.uses_default_password(),
@@ -660,6 +686,7 @@ fn save_server(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
         password: body.get("password").and_then(Value::as_str).map(str::to_string),
         auth_level: body.get("authLevel").and_then(Value::as_str).map(str::to_string),
         allow_remote: body.get("allowRemote").and_then(Value::as_bool),
+        panel_local_only: body.get("panelLocalOnly").and_then(Value::as_bool),
     };
     match proxy.update_server(patch) {
         Ok(server) => ok(json!({
@@ -667,6 +694,7 @@ fn save_server(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
             "webUserName": server.web_user_name,
             "webAuthLevel": server.web_auth_level,
             "allowRemote": server.allow_remote,
+            "panelLocalOnly": server.panel_local_only,
             "rebound": format!("{}:{}", server.host, server.port),
             "restartRequired": false,
             "firewallNote": proxy.firewall_note(),

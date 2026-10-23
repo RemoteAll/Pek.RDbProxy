@@ -43,6 +43,7 @@ fn build_proxy(base: &Path, read_only: bool, password_hash: &str) -> Arc<Proxy> 
             host: "127.0.0.1".into(),
             port: 0,
             allow_remote: false,
+            panel_local_only: false, // 测试走回环；显式关闭避免与断言耦合
             web_user_name: "admin".into(),
             web_password_hash: password_hash.into(),
             web_auth_level: "LocalOnly".into(),

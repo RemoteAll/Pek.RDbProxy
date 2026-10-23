@@ -918,6 +918,16 @@ function loadSettings() {
           云服务器还需在安全组放行同一端口。</td>
       </tr>
       <tr>
+        <td>面板仅限本机</td>
+        <td>
+          <label class="toggle">
+            <input type="checkbox" id="s-panel-local" ${s.panelLocalOnly !== false ? 'checked' : ''}><span class="track"><span class="thumb"></span></span>
+          </label>
+        </td>
+        <td>开启（推荐）时别的机器<b>打不开面板</b>，只能用令牌访问 <span class="font-mono">/Db/*</span> 查数据——开发人员看不到真实连接串、也改不了字段策略。<br>
+          关掉后远程也能开面板，务必把鉴权级别设为 <span class="font-mono">Full</span> 并改掉默认密码。</td>
+      </tr>
+      <tr>
         <td>面板鉴权级别</td>
         <td>
           <select id="s-level" style="width:100%;max-width:420px">
@@ -969,6 +979,7 @@ async function saveSettings() {
   const payload = {
     port: parseInt($('s-port').value, 10) || undefined,
     allowRemote: $('s-remote').checked,
+    panelLocalOnly: $('s-panel-local').checked,
     authLevel: $('s-level').value,
     userName: ($('s-user').value || '').trim(),
     password: ($('s-pass').value || '').trim(),

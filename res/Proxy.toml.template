@@ -15,6 +15,11 @@ Port = 5599
 # 是否允许非回环来源（默认 false）
 AllowRemote = false
 
+# 面板仅限本机访问（默认 true）：
+#   true  = 面板只在本机打开；别的机器只能用令牌访问 /Db/* 查数据，看不到连接串、改不了策略（推荐）
+#   false = 面板也接受远程访问（此时务必把 WebAuthLevel 设为 Full 并改掉默认密码）
+PanelLocalOnly = true
+
 # ── 面板账号（对齐 Pek.RAgent：用户名 + 密码哈希 + 三种鉴权级别）──────────────
 # 默认 admin/admin；首次登录后请在「设置」里改密（面板会提示）
 WebUserName = "admin"
