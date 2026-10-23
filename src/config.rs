@@ -28,10 +28,16 @@ pub struct ServerSection {
     pub host: String,
     /// 监听端口
     pub port: u16,
-    /// 面板登录令牌（空 = 面板仅回环免登录）
-    pub admin_token: String,
     /// 是否允许非回环来源
     pub allow_remote: bool,
+    /// 面板用户名
+    pub web_user_name: String,
+    /// 面板密码哈希（`盐:哈希`，由 `-init` 生成，面板可改）
+    pub web_password_hash: String,
+    /// 鉴权级别：None / LocalOnly（默认）/ Full
+    pub web_auth_level: String,
+    /// JWT 密钥（首次使用自动生成）
+    pub jwt_secret: String,
 }
 
 impl Default for ServerSection {
@@ -39,8 +45,11 @@ impl Default for ServerSection {
         Self {
             host: "127.0.0.1".to_string(),
             port: 5599,
-            admin_token: String::new(),
             allow_remote: false,
+            web_user_name: "admin".to_string(),
+            web_password_hash: String::new(),
+            web_auth_level: "LocalOnly".to_string(),
+            jwt_secret: String::new(),
         }
     }
 }
@@ -94,6 +103,46 @@ pub fn write_template(base: &Path) -> Result<PathBuf, String> {
     }
     std::fs::write(&path, TEMPLATE).map_err(|e| format!("写入模板失败：{e}"))?;
     Ok(path)
+}
+
+/// 保存配置：**保留原有注释与排版**（就地改标量值 + 同步 `[[Databases]]` 数组表），
+/// 写入前自动备份为 `Proxy.toml.bak`。
+pub fn save(base: &Path, config: &ProxyConfig) -> Result<PathBuf, String> {
+    let path = config_path(base);
+    let text = if path.is_file() {
+        std::fs::read_to_string(&path).map_err(|e| format!("读取配置失败：{e}"))?
+    } else {
+        TEMPLATE.to_string()
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
+    }
+    let mut doc = dhrust::config::toml::parse_document(&text)?;
+    let original = dhrust::config::toml::document_to_json(&doc)?;
+    let target = serde_json::to_value(config).map_err(|e| format!("配置序列化失败：{e}"))?;
+
+    // ① 补齐模板里有、文件里缺的键（如新版本新增的 WebUserName/JwtSecret），带注释
+    if let Ok(template) = dhrust::config::toml::parse_document(TEMPLATE) {
+        dhrust::config::toml::merge_missing_keys(doc.as_table_mut(), template.as_table());
+    }
+    // ② 标量（Server 段等）：就地改值，保留原有注释
+    dhrust::config::toml::apply_type_fixes(&mut doc, &original, &target);
+    // ③ 数组表（[[Databases]]）：按条目同步，多余的删除、新增的追加
+    let entries: Vec<serde_json::Value> = target
+        .get("Databases")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    dhrust::config::toml::sync_array_of_tables(&mut doc, "Databases", &entries);
+
+    let content = doc.to_string();
+    if path.is_file() {
+        dhrust::config::toml::backup_and_write(&path, &content)
+            .map_err(|e| format!("写入配置失败：{e}"))
+    } else {
+        std::fs::write(&path, content).map_err(|e| format!("写入配置失败：{e}"))?;
+        Ok(path)
+    }
 }
 
 /// 连接串脱敏：用于日志与面板展示（`Pwd=`/`Password=` 等一律替换为 `***`）。

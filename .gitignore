@@ -12,3 +12,7 @@ Config/.key
 *.db
 *.db-shm
 *.db-wal
+*.log
+
+# 运行中升级暂存
+/Update

@@ -6,133 +6,212 @@
 <title>Pek.RDbProxy · 数据库代理</title>
 <style>
   :root {
-    --bg: #0f172a; --card: #1e293b; --line: #334155; --text: #e2e8f0;
-    --muted: #94a3b8; --accent: #38bdf8; --ok: #22c55e; --bad: #ef4444; --warn: #f59e0b;
+    --bg: #0f172a; --panel: #16233b; --card: #1e293b; --line: #334155;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8;
+    --ok: #22c55e; --bad: #ef4444; --warn: #f59e0b;
   }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-  }
-  header {
-    display: flex; align-items: center; gap: 16px; padding: 14px 22px;
-    border-bottom: 1px solid var(--line); background: #111c33;
-    position: sticky; top: 0; z-index: 10;
-  }
-  header h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: .3px; }
-  header .sub { color: var(--muted); font-size: 12px; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 20px; padding: 12px 22px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 20; }
+  header .logo { font-size: 16px; font-weight: 600; letter-spacing: .3px; }
+  header .ver { color: var(--muted); font-size: 12px; }
+  nav { display: flex; gap: 4px; }
+  nav button { background: transparent; border: 0; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 8px 14px; font-size: 13.5px; cursor: pointer; border-radius: 0; }
+  nav button:hover { color: var(--text); }
+  nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
   header .spacer { flex: 1; }
-  main { padding: 20px 22px 60px; max-width: 1500px; margin: 0 auto; }
-  h2 { font-size: 15px; margin: 22px 0 10px; color: var(--muted); font-weight: 600; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  header .user { color: var(--muted); font-size: 12.5px; }
+  main { max-width: 1520px; margin: 0 auto; padding: 20px 22px 70px; }
+  h2 { font-size: 14.5px; color: var(--muted); font-weight: 600; margin: 22px 0 10px; }
+  .bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
-  .card .top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .card .top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
   .card .name { font-weight: 600; font-size: 15px; }
-  .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .card .acts { margin-left: auto; display: flex; gap: 6px; }
+  .tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
   .tag.ok { color: var(--ok); border-color: #14532d; background: #052e16; }
   .tag.bad { color: var(--bad); border-color: #7f1d1d; background: #450a0a; }
   .tag.ro { color: var(--warn); border-color: #78350f; background: #451a03; }
-  .kv { display: grid; grid-template-columns: 88px 1fr; gap: 4px 10px; font-size: 13px; }
+  .kv { display: grid; grid-template-columns: 84px 1fr; gap: 5px 10px; font-size: 13px; }
   .kv .k { color: var(--muted); }
   .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
   .conn { color: #7dd3fc; }
   .err { color: var(--bad); font-size: 12px; margin-top: 6px; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #26364f; vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; position: sticky; top: 57px; background: #16233b; }
+  th { color: var(--muted); font-weight: 600; position: sticky; top: 53px; background: var(--panel); }
   tr:hover td { background: #1b2a45; }
-  td.sql { max-width: 640px; }
-  td.sql span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ok { color: var(--ok); } .bad { color: var(--bad); }
-  button {
-    background: #1d4ed8; color: #fff; border: 0; border-radius: 6px; padding: 5px 12px;
-    font-size: 12.5px; cursor: pointer;
-  }
+  td.sql span { display: block; max-width: 620px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .okc { color: var(--ok); } .badc { color: var(--bad); }
+  button { background: #1d4ed8; color: #fff; border: 0; border-radius: 6px;
+    padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
   button:hover { background: #2563eb; }
   button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
   button.ghost:hover { border-color: var(--accent); color: var(--accent); }
-  select, input[type=password] {
-    background: #0b1220; color: var(--text); border: 1px solid var(--line);
-    border-radius: 6px; padding: 5px 8px; font-size: 12.5px;
-  }
-  .tabs { display: flex; gap: 6px; }
-  .tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); border-radius: 0; padding: 6px 10px; }
-  .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
-  .login { max-width: 380px; margin: 90px auto; text-align: center; }
-  .login input { width: 100%; margin: 12px 0; }
+  button.danger { background: transparent; border: 1px solid #7f1d1d; color: var(--bad); }
+  button.danger:hover { background: #450a0a; }
+  input, select { background: #0b1220; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 9px; font-size: 13px; width: 100%; }
+  label { display: block; color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
   .hidden { display: none !important; }
-  .foot { color: var(--muted); font-size: 12px; margin-top: 18px; }
+  .login { max-width: 360px; margin: 90px auto; }
+  .login .card { padding: 22px 24px; }
+  .login h1 { font-size: 17px; margin: 0 0 4px; }
+  .banner { background: #451a03; border: 1px solid #78350f; color: #fdba74;
+    padding: 8px 14px; border-radius: 8px; font-size: 12.5px; margin-bottom: 12px; }
+  dialog { background: var(--card); color: var(--text); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px 22px; min-width: 460px; max-width: 620px; }
+  dialog::backdrop { background: rgba(2, 6, 23, .7); }
+  dialog h3 { margin: 0 0 4px; font-size: 15px; }
+  dialog .foot { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .chk { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .chk input { width: auto; }
+  .foot-note { color: var(--muted); font-size: 12px; margin-top: 16px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>🗄 Pek.RDbProxy</h1>
-  <span class="sub" id="uptime">—</span>
-  <div class="spacer"></div>
-  <div class="tabs">
-    <button data-panel="overview" class="active">概览</button>
-    <button data-panel="audit">SQL 审计</button>
-  </div>
-  <button class="ghost" id="btn-refresh">刷新</button>
+  <span class="logo">🗄 Pek.RDbProxy</span>
+  <span class="ver" id="ver">—</span>
+  <nav id="nav">
+    <button data-tab="overview" class="active">概览</button>
+    <button data-tab="audit">SQL 审计</button>
+    <button data-tab="settings">设置</button>
+  </nav>
+  <span class="spacer"></span>
+  <span class="user" id="user">—</span>
+  <button class="ghost" id="btn-logout">退出</button>
 </header>
 
 <main>
-  <section id="login" class="login hidden">
-    <h2 style="color:var(--text);font-size:16px">需要面板令牌</h2>
-    <p class="sub">填写 <span class="mono">Config/Proxy.toml</span> 里的 <span class="mono">AdminToken</span></p>
-    <input type="password" id="token-input" placeholder="AdminToken" />
-    <button id="btn-login">登录</button>
-    <p class="foot" id="login-error"></p>
+  <!-- 登录 -->
+  <section id="pane-login" class="login hidden">
+    <div class="card">
+      <h1>🗄 Pek.RDbProxy</h1>
+      <p class="ver">本地数据库代理 · 项目侧只见代理地址与令牌</p>
+      <label>用户名</label>
+      <input id="login-user" value="admin" autocomplete="username" />
+      <label>密码</label>
+      <input id="login-pass" type="password" autocomplete="current-password" />
+      <div class="foot-note" id="login-msg"></div>
+      <div style="margin-top:14px"><button id="btn-login" style="width:100%">登 录</button></div>
+    </div>
   </section>
 
-  <section id="panel-overview" class="hidden">
-    <h2>数据源（真实连接串已脱敏；只读开关仅运行期生效）</h2>
+  <!-- 概览 -->
+  <section id="pane-overview" class="hidden">
+    <div id="banner" class="banner hidden"></div>
+    <div class="bar">
+      <h2 style="margin:0">数据源</h2>
+      <span class="ver" id="uptime">—</span>
+      <span class="spacer" style="flex:1"></span>
+      <button id="btn-add">+ 新增数据源</button>
+      <button class="ghost" id="btn-refresh">刷新</button>
+    </div>
     <div class="grid" id="sources"></div>
-    <p class="foot">
+    <p class="foot-note">
       项目侧连接串：<span class="mono conn" id="client-hint">Server=http://127.0.0.1:&lt;Port&gt;;Database=&lt;Name&gt;;Password=&lt;Token&gt;;provider=network</span>
     </p>
   </section>
 
-  <section id="panel-audit" class="hidden">
-    <h2>
-      SQL 审计（内存环形 500 条，同时写 Log/）
-      <select id="audit-limit" style="margin-left:8px">
+  <!-- 审计 -->
+  <section id="pane-audit" class="hidden">
+    <div class="bar">
+      <h2 style="margin:0">SQL 审计（内存环形 500 条，同时写 Log/）</h2>
+      <span class="spacer" style="flex:1"></span>
+      <select id="audit-limit" style="width:auto">
         <option value="50">最近 50</option>
         <option value="100" selected>最近 100</option>
         <option value="300">最近 300</option>
         <option value="500">最近 500</option>
       </select>
-    </h2>
+    </div>
     <div class="card" style="padding:0;overflow:auto;max-height:70vh">
       <table>
-        <thead>
-          <tr><th>时间</th><th>数据源</th><th>操作</th><th>结果</th><th>耗时</th><th>行数</th><th>令牌</th><th>SQL / 错误</th></tr>
-        </thead>
-        <tbody id="audit-body"><tr><td colspan="8" class="sub">加载中…</td></tr></tbody>
+        <thead><tr>
+          <th>时间</th><th>数据源</th><th>操作</th><th>结果</th>
+          <th>耗时</th><th>行数</th><th>令牌</th><th>SQL / 错误</th>
+        </tr></thead>
+        <tbody id="audit-body"><tr><td colspan="8" class="ver">加载中…</td></tr></tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- 设置 -->
+  <section id="pane-settings" class="hidden">
+    <h2>服务端设置</h2>
+    <div class="card" style="max-width:640px">
+      <div class="row2">
+        <div><label>监听端口</label><input id="set-port" type="number" min="1" max="65535" /></div>
+        <div><label>鉴权级别</label>
+          <select id="set-level">
+            <option value="None">None（全部放行）</option>
+            <option value="LocalOnly">LocalOnly（本机免登录）</option>
+            <option value="Full">Full（一律登录）</option>
+          </select>
+        </div>
+      </div>
+      <div class="row2">
+        <div><label>用户名</label><input id="set-user" /></div>
+        <div><label>新密码（留空不改）</label><input id="set-pass" type="password" /></div>
+      </div>
+      <div class="chk"><input id="set-allow" type="checkbox" /><label style="margin:0">允许非本机来源访问（AllowRemote）</label></div>
+      <div class="foot-note" id="set-msg"></div>
+      <div style="margin-top:14px"><button id="btn-save-server">保存设置</button></div>
+      <div class="foot-note">端口变更需重启后生效；鉴权级别与账号立即生效。</div>
     </div>
   </section>
 </main>
 
+<!-- 数据源编辑 -->
+<dialog id="dlg-ds">
+  <h3 id="dlg-title">新增数据源</h3>
+  <p class="ver">真实连接串只保存在本机 Config/Proxy.toml（不会进代码仓库）</p>
+  <label>名称（项目侧 Database=）</label>
+  <input id="ds-name" placeholder="demo" />
+  <label>连接串（Pek.RCode 格式；支持 enc:v1: 加密值）</label>
+  <input id="ds-conn" placeholder="Server=10.0.0.5;Port=3306;Database=x;Uid=ro;Pwd=***;provider=mysql" />
+  <div class="row2">
+    <div><label>令牌（项目侧 Password=；编辑时留空 = 不改）</label><input id="ds-token" /></div>
+    <div><label>备注</label><input id="ds-desc" /></div>
+  </div>
+  <div class="chk"><input id="ds-ro" type="checkbox" checked /><label style="margin:0">只读模式（拒绝一切写操作）</label></div>
+  <div class="foot-note" id="ds-msg"></div>
+  <div class="foot">
+    <button class="ghost" id="ds-cancel">取消</button>
+    <button id="ds-save">保存</button>
+  </div>
+</dialog>
+
 <script>
-const KEY = 'rdbproxy_token';
-let currentTab = 'overview';
+const KEY = 'rdbproxy_jwt';
+let tab = 'overview';
 let timer = null;
+let editing = null;
 
 const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtUs = (us) => us >= 1000 ? (us / 1000).toFixed(1) + ' ms' : (us || 0) + ' µs';
-const fmtUptime = (secs) => {
-  const d = Math.floor(secs / 86400), h = Math.floor(secs % 86400 / 3600),
-        m = Math.floor(secs % 3600 / 60), s = secs % 60;
-  return (d ? d + ' 天 ' : '') + (h ? h + ' 时 ' : '') + m + ' 分 ' + s + ' 秒';
+const fmtUptime = (s) => {
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return (d ? d + ' 天 ' : '') + (h ? h + ' 时 ' : '') + m + ' 分 ' + x + ' 秒';
 };
 
-function showLogin(message) {
-  $('login').classList.remove('hidden');
-  $('panel-overview').classList.add('hidden');
-  $('panel-audit').classList.add('hidden');
-  $('login-error').textContent = message || '';
+function showPane(name) {
+  ['login', 'overview', 'audit', 'settings'].forEach((p) => {
+    $('pane-' + p).classList.toggle('hidden', p !== name);
+  });
+  document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+  tab = name;
+  clearInterval(timer);
+  if (name === 'overview') timer = setInterval(() => refresh(true), 3000);
+  if (name === 'audit') timer = setInterval(() => refresh(true), 5000);
 }
 
 async function api(path, options) {
@@ -140,41 +219,45 @@ async function api(path, options) {
   const token = sessionStorage.getItem(KEY);
   if (token) headers['Authorization'] = 'Bearer ' + token;
   if (options && options.body) headers['Content-Type'] = 'application/json';
-  let res;
-  try {
-    res = await fetch(path, Object.assign({}, options, { headers }));
-  } catch (e) {
-    throw new Error('请求失败：' + e.message);
-  }
-  if (res.status === 401) {
-    showLogin('令牌无效或已过期');
-    throw new Error('unauthorized');
-  }
+  const res = await fetch(path, Object.assign({}, options, { headers }));
+  if (res.status === 401) { needLogin(); throw new Error('unauthorized'); }
   const json = await res.json().catch(() => ({ ok: false, message: 'HTTP ' + res.status }));
   if (!json.ok) throw new Error(json.message || ('HTTP ' + res.status));
   return json.data;
 }
 
-function sourceCard(s) {
-  const status = s.available
-    ? '<span class="tag ok">可用</span>'
-    : '<span class="tag bad">不可用</span>';
+function needLogin(message) {
+  sessionStorage.removeItem(KEY);
+  $('login-msg').textContent = message || '';
+  showPane('login');
+}
+
+async function refresh(silent) {
+  try {
+    if (tab === 'overview') await loadOverview();
+    else if (tab === 'audit') await loadAudit();
+  } catch (e) {
+    if (e.message !== 'unauthorized' && !silent) console.warn(e);
+  }
+}
+
+function card(s) {
+  const st = s.available ? '<span class="tag ok">可用</span>' : '<span class="tag bad">不可用</span>';
   const ro = s.readOnly ? '<span class="tag ro">只读</span>' : '';
   return `<div class="card">
     <div class="top">
-      <span class="name">${esc(s.name)}</span>
-      ${status}${ro}
+      <span class="name">${esc(s.name)}</span>${st}${ro}
       <span class="tag">${esc(s.kind || '-')}</span>
-      <span style="flex:1"></span>
-      <button class="ghost" data-toggle="${esc(s.name)}" data-next="${s.readOnly ? 'false' : 'true'}">
-        ${s.readOnly ? '解除只读' : '设为只读'}
-      </button>
+      <span class="acts">
+        <button class="ghost" data-edit="${esc(s.name)}">编辑</button>
+        <button class="ghost" data-ro="${esc(s.name)}" data-next="${s.readOnly ? 'false' : 'true'}">${s.readOnly ? '解除只读' : '设为只读'}</button>
+        <button class="danger" data-del="${esc(s.name)}">删除</button>
+      </span>
     </div>
     <div class="kv">
       <span class="k">备注</span><span>${esc(s.description || '-')}</span>
-      <span class="k">令牌</span><span>${s.tokenSet ? '已设置' : '<span class="bad">未设置（本机免令牌）</span>'}</span>
-      <span class="k">请求</span><span>${s.requests} 次 / 失败 ${s.failures} 次</span>
-      <span class="k">平均耗时</span><span>${fmtUs(s.avgUs)}</span>
+      <span class="k">令牌</span><span>${s.tokenSet ? '已设置' : '<span class="badc">未设置（本机免令牌）</span>'}</span>
+      <span class="k">请求</span><span>${s.requests} 次 / 失败 ${s.failures} 次 · 平均 ${fmtUs(s.avgUs)}</span>
       <span class="k">连接</span><span class="mono conn">${esc(s.connection)}</span>
     </div>
     ${s.error ? `<div class="err">${esc(s.error)}</div>` : ''}
@@ -183,96 +266,142 @@ function sourceCard(s) {
 }
 
 async function loadOverview() {
-  const data = await api('/api/status');
-  $('uptime').textContent = '运行 ' + fmtUptime(data.uptimeSecs) +
-    (data.allowRemote ? ' · 允许远程' : ' · 仅本机');
-  $('sources').innerHTML = data.sources.map(sourceCard).join('') ||
-    '<div class="card">尚未配置数据源（编辑 Config/Proxy.toml 后重启）</div>';
-  document.querySelectorAll('[data-toggle]').forEach((btn) => {
-    btn.onclick = async () => {
-      try {
-        await api('/api/toggle', {
-          method: 'POST',
-          body: JSON.stringify({ db: btn.dataset.toggle, readOnly: btn.dataset.next === 'true' }),
-        });
-        await loadOverview();
-      } catch (e) {
-        if (e.message !== 'unauthorized') alert(e.message);
-      }
-    };
+  const d = await api('/api/status');
+  $('ver').textContent = 'v0.1.0 · 运行 ' + fmtUptime(d.uptimeSecs) + (d.server.allowRemote ? ' · 允许远程' : ' · 仅本机');
+  $('uptime').textContent = '端口 ' + d.server.port + ' · ' + d.server.webAuthLevel;
+  $('user').textContent = '👤 ' + (sessionStorage.getItem('rdbproxy_user') || d.server.webUserName || 'admin');
+  if (d.server.defaultPassword) {
+    $('banner').classList.remove('hidden');
+    $('banner').textContent = '⚠ 正在使用默认密码 admin/admin —— 请到「设置」里尽快改密';
+  } else {
+    $('banner').classList.add('hidden');
+  }
+  $('sources').innerHTML = d.sources.map(card).join('') ||
+    '<div class="card">尚未配置数据源，点右上角「+ 新增数据源」</div>';
+
+  document.querySelectorAll('[data-edit]').forEach((b) => b.onclick = () => openDialog(b.dataset.edit, d.sources.find((s) => s.name === b.dataset.edit)));
+  document.querySelectorAll('[data-ro]').forEach((b) => b.onclick = async () => {
+    try {
+      await api('/api/readonly', { method: 'POST', body: JSON.stringify({ db: b.dataset.ro, readOnly: b.dataset.next === 'true' }) });
+      await loadOverview();
+    } catch (e) { if (e.message !== 'unauthorized') alert(e.message); }
   });
+  document.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => {
+    if (!confirm('确认删除数据源「' + b.dataset.del + '」？（同时从 Config/Proxy.toml 移除）')) return;
+    try {
+      await api('/api/datasource/delete', { method: 'POST', body: JSON.stringify({ name: b.dataset.del }) });
+      await loadOverview();
+    } catch (e) { if (e.message !== 'unauthorized') alert(e.message); }
+  });
+
+  // 设置页同步服务端当前值
+  $('set-port').value = d.server.port;
+  $('set-user').value = d.server.webUserName;
+  $('set-level').value = d.server.webAuthLevel;
+  $('set-allow').checked = !!d.server.allowRemote;
 }
 
 async function loadAudit() {
-  const limit = $('audit-limit').value;
-  const rows = await api('/api/audit?n=' + encodeURIComponent(limit));
-  if (!rows.length) {
-    $('audit-body').innerHTML = '<tr><td colspan="8" class="sub">暂无记录</td></tr>';
-    return;
-  }
+  const rows = await api('/api/audit?n=' + $('audit-limit').value);
+  if (!rows.length) { $('audit-body').innerHTML = '<tr><td colspan="8" class="ver">暂无记录</td></tr>'; return; }
   $('audit-body').innerHTML = rows.map((r) => `<tr>
-    <td class="mono">${esc(r.at)}</td>
-    <td>${esc(r.db)}</td>
-    <td>${esc(r.op)}</td>
-    <td class="${r.ok ? 'ok' : 'bad'}">${r.ok ? '成功' : '失败'}</td>
-    <td class="mono">${fmtUs(r.micros)}</td>
-    <td class="mono">${r.rows >= 0 ? r.rows : '-'}</td>
+    <td class="mono">${esc(r.at)}</td><td>${esc(r.db)}</td><td>${esc(r.op)}</td>
+    <td class="${r.ok ? 'okc' : 'badc'}">${r.ok ? '成功' : '失败'}</td>
+    <td class="mono">${fmtUs(r.micros)}</td><td class="mono">${r.rows >= 0 ? r.rows : '-'}</td>
     <td class="mono">${esc(r.token)}</td>
     <td class="sql mono"><span title="${esc(r.error || r.sql)}">${esc(r.error || r.sql || '-')}</span></td>
   </tr>`).join('');
 }
 
-async function refresh() {
-  try {
-    if (currentTab === 'overview') {
-      $('panel-overview').classList.remove('hidden');
-      $('panel-audit').classList.add('hidden');
-      await loadOverview();
-    } else {
-      $('panel-overview').classList.add('hidden');
-      $('panel-audit').classList.remove('hidden');
-      await loadAudit();
-    }
-  } catch (e) {
-    if (e.message !== 'unauthorized') console.warn(e);
-  }
+function openDialog(name, source) {
+  editing = name || null;
+  $('dlg-title').textContent = name ? '编辑数据源：' + name : '新增数据源';
+  $('ds-name').value = name || '';
+  $('ds-name').disabled = !!name;
+  $('ds-conn').value = '';
+  $('ds-conn').placeholder = source ? '（留空 = 不改；当前：' + source.connection + '）' : 'Server=...;Provider=MySQL';
+  $('ds-token').value = '';
+  $('ds-token').placeholder = source && source.tokenSet ? '（留空 = 不改）' : 'tk-xxxx';
+  $('ds-desc').value = source ? source.description : '';
+  $('ds-ro').checked = source ? source.readOnly : true;
+  $('ds-msg').textContent = '';
+  $('dlg-ds').showModal();
 }
 
-function schedule() {
-  clearInterval(timer);
-  timer = setInterval(refresh, currentTab === 'overview' ? 3000 : 5000);
-}
-
-document.querySelectorAll('.tabs button').forEach((btn) => {
-  btn.onclick = () => {
-    document.querySelectorAll('.tabs button').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    currentTab = btn.dataset.panel;
-    schedule();
-    refresh();
+$('btn-add').onclick = () => openDialog(null, null);
+$('ds-cancel').onclick = () => $('dlg-ds').close();
+$('ds-save').onclick = async () => {
+  const name = $('ds-name').value.trim();
+  const conn = $('ds-conn').value.trim();
+  if (!name) { $('ds-msg').textContent = '名称不能为空'; return; }
+  if (!conn && !editing) { $('ds-msg').textContent = '连接串不能为空'; return; }
+  const body = {
+    name,
+    connection: conn || (editing ? undefined : ''),
+    token: $('ds-token').value.trim(),
+    readOnly: $('ds-ro').checked,
+    description: $('ds-desc').value.trim(),
   };
-});
-
-$('btn-refresh').onclick = refresh;
-$('audit-limit').onchange = refresh;
-$('btn-login').onclick = async () => {
-  sessionStorage.setItem(KEY, $('token-input').value.trim());
-  $('login').classList.add('hidden');
-  await refresh();
+  // 编辑且连接串留空 = 保留原值（服务端按「空 = 不改」处理需显式传空串）
+  if (!body.connection) delete body.connection;
+  try {
+    await api('/api/datasource', { method: 'POST', body: JSON.stringify(body) });
+    $('dlg-ds').close();
+    await loadOverview();
+  } catch (e) { $('ds-msg').textContent = e.message; }
 };
-$('token-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') $('btn-login').click();
+
+$('btn-save-server').onclick = async () => {
+  const body = {
+    port: Number($('set-port').value),
+    userName: $('set-user').value.trim(),
+    authLevel: $('set-level').value,
+    allowRemote: $('set-allow').checked,
+  };
+  const pass = $('set-pass').value;
+  if (pass) body.password = pass;
+  try {
+    const d = await api('/api/server', { method: 'POST', body: JSON.stringify(body) });
+    $('set-msg').textContent = d.restartRequired ? '已保存；端口变更需重启后生效' : '已保存';
+    $('set-pass').value = '';
+  } catch (e) { $('set-msg').textContent = e.message; }
+};
+
+$('btn-login').onclick = async () => {
+  const user = $('login-user').value.trim();
+  const password = $('login-pass').value;
+  try {
+    const d = await api('/api/login', { method: 'POST', body: JSON.stringify({ user, password }) });
+    sessionStorage.setItem(KEY, d.token);
+    sessionStorage.setItem('rdbproxy_user', d.user);
+    $('login-pass').value = '';
+    showPane('overview');
+    await loadOverview();
+  } catch (e) { $('login-msg').textContent = e.message; }
+};
+$('login-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn-login').click(); });
+
+$('btn-logout').onclick = async () => {
+  try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
+  needLogin('已退出');
+};
+$('btn-refresh').onclick = () => refresh();
+$('audit-limit').onchange = () => loadAudit();
+document.querySelectorAll('#nav button').forEach((b) => b.onclick = async () => {
+  showPane(b.dataset.tab);
+  await refresh();
 });
 
-// 首次进入：先探测（本机无令牌时直接可用）
+// 首次进入：探测是否需要登录
 (async () => {
   try {
-    await api('/api/ping');
-    await refresh();
+    await api('/api/status');
+    showPane('overview');
+    await loadOverview();
   } catch (e) {
-    if (e.message !== 'unauthorized') showLogin(e.message);
+    if (e.message === 'unauthorized') needLogin('');
+    else needLogin(e.message);
   }
-  schedule();
 })();
 </script>
 </body>

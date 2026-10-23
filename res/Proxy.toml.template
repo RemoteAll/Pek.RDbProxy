@@ -12,10 +12,18 @@
 # 监听地址：127.0.0.1 = 只服务本机（推荐）；要给局域网其他机器用改 0.0.0.0 并把 AllowRemote 设 true
 Host = "127.0.0.1"
 Port = 5599
-# 面板登录令牌；留空 = 面板仅允许本机回环访问（无需登录）
-AdminToken = ""
 # 是否允许非回环来源（默认 false）
 AllowRemote = false
+
+# ── 面板账号（对齐 Pek.RAgent：用户名 + 密码哈希 + 三种鉴权级别）──────────────
+# 默认 admin/admin；首次登录后请在「设置」里改密（面板会提示）
+WebUserName = "admin"
+# 密码哈希（`盐:哈希`）；留空 = 启动时自动生成 admin/admin 并写入
+WebPasswordHash = ""
+# 鉴权级别：None（全放行）/ LocalOnly（本机免登录，默认）/ Full（一律登录）
+WebAuthLevel = "LocalOnly"
+# JWT 密钥（首次签发令牌时自动生成，勿手改）
+JwtSecret = ""
 
 # ── 数据源（[[Databases]] 可重复；Name 唯一，忽略大小写）──────────────────────
 [[Databases]]

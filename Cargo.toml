@@ -7,8 +7,15 @@ license = "MIT"
 readme = "README.md"
 
 [dependencies]
-# 基础库（日志 / 配置 / 安全随机 / 可逆加密 / HTTP 服务）
-dhrust = { path = "../DH.RustBase", default-features = false, features = ["net", "toml", "secret"] }
+# 基础库（日志 / 配置 / 安全随机 / 可逆加密 / HTTP 服务 / 服务化 / 自升级）
+dhrust = { path = "../DH.RustBase", default-features = false, features = [
+    "net",
+    "toml",
+    "secret",
+    "service",
+    "zip-extract",
+    "patch",
+] }
 # ORM + 驱动（默认只带常用驱动，其余按需在下面加 driver-* 特性）
 pek-rcode = { path = "../Pek.RCode", default-features = false, features = [
     "database",
@@ -22,3 +29,7 @@ serde_json = "1"
 toml = "1"
 chrono = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+# 面板令牌：与 C# NewLife `JwtBuilder` 互通的 HS256（Pek.RCard 已切换，勿逐仓复制）
+pek-rpermissions = { path = "../Pek.RPermissions" }
+# WAF：所有带网页的项目必须接（admin_api 预设）
+pek-rwaf = { path = "../Pek.RWaf" }

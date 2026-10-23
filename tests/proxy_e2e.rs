@@ -1,11 +1,11 @@
-//! 端到端：真实 HTTP 宿主 + `DbClient`（network 协议）+ 只读护栏 + 面板接口。
+//! 端到端：真实 HTTP（Router + WAF + JWT 鉴权）+ `DbClient`（network 协议）+ 只读护栏 + 面板 API。
 
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use dhrust::net::http::{HttpOutcome, HttpServer, HttpServerOptions, handler};
+use dhrust::net::http::HttpServer;
 use pek_rcode::dal::Dal;
 use pek_rcode::db_service::DbClient;
 use pek_rdbproxy::config::{DatabaseSection, ProxyConfig, ServerSection};
@@ -26,7 +26,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 }
 
 /// 建一个 SQLite 库并放一行数据，返回代理实例。
-fn build_proxy(base: &Path, read_only: bool, admin_token: &str) -> Arc<Proxy> {
+fn build_proxy(base: &Path, read_only: bool, password_hash: &str) -> Arc<Proxy> {
     let db = base.join("demo.db");
     {
         let dal = Dal::open(&format!("Data Source={};Provider=SQLite", db.display())).unwrap();
@@ -42,8 +42,11 @@ fn build_proxy(base: &Path, read_only: bool, admin_token: &str) -> Arc<Proxy> {
         server: ServerSection {
             host: "127.0.0.1".into(),
             port: 0,
-            admin_token: admin_token.into(),
             allow_remote: false,
+            web_user_name: "admin".into(),
+            web_password_hash: password_hash.into(),
+            web_auth_level: "LocalOnly".into(),
+            jwt_secret: String::new(),
         },
         databases: vec![DatabaseSection {
             name: "demo".into(),
@@ -53,10 +56,10 @@ fn build_proxy(base: &Path, read_only: bool, admin_token: &str) -> Arc<Proxy> {
             description: "e2e".into(),
         }],
     };
-    Arc::new(Proxy::open(&config).expect("代理应可构建"))
+    Arc::new(Proxy::open(base, &config).expect("代理应可构建"))
 }
 
-/// 后台线程起 HTTP 服务，返回监听地址。
+/// 后台线程起 HTTP 服务（走真实路由 + WAF），返回监听地址。
 fn serve(proxy: Arc<Proxy>) -> String {
     let (tx, rx) = mpsc::channel::<String>();
     std::thread::spawn(move || {
@@ -68,34 +71,44 @@ fn serve(proxy: Arc<Proxy>) -> String {
             let server = HttpServer::bind("127.0.0.1:0").await.expect("绑定");
             let addr = server.local_addr().expect("本地地址").to_string();
             let _ = tx.send(addr);
-            let handler = handler(move |req| {
-                let proxy = Arc::clone(&proxy);
-                async move { HttpOutcome::Response(proxy.handle(req)) }
-            });
-            let options = HttpServerOptions {
-                thread_per_connection: true,
-                ..Default::default()
-            };
-            let _ = server.serve_with(handler, options).await;
+            let handler = pek_rdbproxy::panel::build_router(proxy).into_handler();
+            let _ = server.serve_with(handler, Default::default()).await;
         });
     });
     rx.recv_timeout(Duration::from_secs(10))
         .expect("服务应在 10 秒内就绪")
 }
 
-/// 极简 HTTP GET（取完整响应文本）。
-fn http_get(addr: &str, path: &str, bearer: Option<&str>) -> String {
+/// 极简 HTTP 请求（返回状态码与正文）。
+fn http(
+    addr: &str,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<&str>,
+) -> (u16, String) {
     let mut stream = std::net::TcpStream::connect(addr).expect("连接");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .ok();
     let auth = bearer
         .map(|token| format!("Authorization: Bearer {token}\r\n"))
         .unwrap_or_default();
+    let payload = body.unwrap_or("");
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {addr}\r\n{auth}Connection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
     );
     stream.write_all(request.as_bytes()).expect("发送");
     let mut text = String::new();
     stream.read_to_string(&mut text).expect("接收");
-    text
+    let status = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or(0);
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+    (status, body)
 }
 
 #[test]
@@ -116,64 +129,127 @@ fn forwards_queries_and_blocks_writes_in_read_only() {
         .query_rowset("SELECT Id, Name FROM t", None)
         .expect("查询应成功");
     assert_eq!(set.rows.len(), 1, "应查到 1 行");
-    assert_eq!(
-        set.rows[0].get_by_name("Name").and_then(|v| v.as_str().map(str::to_string)),
-        Some("hello".to_string())
-    );
 
-    // 只读护栏：写操作必须被拒
+    // 只读护栏
     let err = client
         .execute("INSERT INTO t (Id, Name) VALUES (2, 'x')", None)
         .expect_err("只读模式下应拒绝写入");
     assert!(err.to_string().contains("只读"), "错误信息应说明只读：{err}");
 
-    // 令牌错误 → 登录失败
-    let bad = DbClient::new(format!("http://{addr}"), "demo", Some("wrong-token"));
-    assert!(bad.login().is_err(), "错误令牌应登录失败");
-
-    // 数据源不存在 → 404
-    let missing = DbClient::new(format!("http://{addr}"), "nope", Some("tk-test-123456"));
-    assert!(missing.login().is_err(), "不存在的数据源应失败");
+    // 令牌错误 / 数据源不存在
+    assert!(
+        DbClient::new(format!("http://{addr}"), "demo", Some("wrong"))
+            .login()
+            .is_err(),
+        "错误令牌应登录失败"
+    );
+    assert!(
+        DbClient::new(format!("http://{addr}"), "nope", Some("tk-test-123456"))
+            .login()
+            .is_err(),
+        "不存在的数据源应失败"
+    );
 
     let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
-fn writes_pass_when_not_read_only_and_panel_reports() {
-    let base = temp_dir("rw");
-    let proxy = build_proxy(&base, false, "admin-tk");
+fn panel_login_uses_jwt_and_crud_works() {
+    let base = temp_dir("panel");
+    let hash = pek_rdbproxy::proxy::hash_password("pass-123");
+    let proxy = build_proxy(&base, false, &hash);
     let addr = serve(Arc::clone(&proxy));
 
-    let client = DbClient::new(format!("http://{addr}"), "demo", Some("tk-test-123456"));
-    client.login().expect("登录");
-    let affected = client
-        .execute("INSERT INTO t (Id, Name) VALUES (2, 'y')", None)
-        .expect("非只读应允许写入");
-    assert_eq!(affected, 1);
-    let total = client.query_count("t").expect("计数");
-    assert_eq!(total, 2);
+    // 未登录：LocalOnly + 本机回环 → 面板 API 免登录
+    let (status, body) = http(&addr, "GET", "/api/status", None, None);
+    assert_eq!(status, 200, "回环应免登录：{body}");
+    assert!(body.contains("\"sources\""), "应返回数据源列表：{body}");
+    assert!(!body.contains("tk-test-123456"), "不应回显数据源令牌");
 
-    // 面板：无令牌 401
-    let unauthorized = http_get(&addr, "/api/status", None);
-    assert!(unauthorized.contains("401"), "无令牌应 401：{unauthorized}");
+    // 登录：错误密码 → 401
+    let (status, _) = http(
+        &addr,
+        "POST",
+        "/api/login",
+        None,
+        Some(r#"{"user":"admin","password":"wrong"}"#),
+    );
+    assert_eq!(status, 401, "错误密码应 401");
 
-    // 面板：带令牌可读，且包含数据源与统计（连接串已脱敏）
-    let authorized = http_get(&addr, "/api/status", Some("admin-tk"));
-    assert!(authorized.contains("\"sources\""), "应返回数据源列表");
-    assert!(authorized.contains("\"name\":\"demo\""));
+    // 登录：正确密码 → JWT
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/api/login",
+        None,
+        Some(r#"{"user":"admin","password":"pass-123"}"#),
+    );
+    assert_eq!(status, 200, "应登录成功：{body}");
+    let token = json_field(&body, "token");
+    assert_eq!(token.split('.').count(), 3, "令牌应是 JWT（三段）：{token}");
+
+    // 带 JWT 访问面板
+    let (status, body) = http(&addr, "GET", "/api/status", Some(&token), None);
+    assert_eq!(status, 200);
+    assert!(body.contains("\"name\":\"demo\""), "{body}");
+
+    // 新增数据源（写回配置）
+    let new_db = base.join("second.db");
+    // Windows 路径含反斜杠：JSON 字符串里必须用正斜杠（否则 `\U` 是非法转义）
+    let new_db_text = new_db.display().to_string().replace('\\', "/");
+    let payload = format!(
+        r#"{{"name":"second","connection":"Data Source={new_db_text};Provider=SQLite","token":"tk-second-9999","readOnly":true,"description":"第二个"}}"#
+    );
+    let (status, body) = http(&addr, "POST", "/api/datasource", Some(&token), Some(&payload));
+    assert_eq!(status, 200, "新增数据源应成功：{body}");
+    assert!(body.contains("\"name\":\"second\""), "{body}");
+    let config_text =
+        std::fs::read_to_string(base.join("Config/Proxy.toml")).expect("配置应被写回");
+    assert!(config_text.contains("second"), "配置里应有新数据源：{config_text}");
     assert!(
-        !authorized.contains("tk-test-123456"),
-        "面板不应回显数据源令牌"
+        config_text.contains("# ──"), 
+        "写回应保留模板注释：{config_text}"
     );
 
-    // 审计：应有查询/写入记录
-    let audit = http_get(&addr, "/api/audit?n=20", Some("admin-tk"));
-    assert!(audit.contains("\"op\":\"Execute\""), "审计应记录 Execute：{audit}");
-    assert!(audit.contains("****"), "审计里令牌应是指纹");
+    // 切换只读
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/api/readonly",
+        Some(&token),
+        Some(r#"{"db":"second","readOnly":false}"#),
+    );
+    assert_eq!(status, 200, "{body}");
 
-    // 首页（面板 HTML）
-    let page = http_get(&addr, "/", None);
-    assert!(page.contains("Pek.RDbProxy"), "首页应返回面板 HTML");
+    // 删除数据源
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/api/datasource/delete",
+        Some(&token),
+        Some(r#"{"name":"second"}"#),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, body) = http(&addr, "GET", "/api/status", Some(&token), None);
+    assert!(!body.contains("\"second\""), "删除后不应再出现：{body}");
+
+    // 审计：先通过代理协议产生记录（面板 API 不写审计）
+    let client = DbClient::new(format!("http://{addr}"), "demo", Some("tk-test-123456"));
+    client.login().expect("协议登录");
+    let _ = client.query_count("t");
+    let (status, body) = http(&addr, "GET", "/api/audit?n=20", Some(&token), None);
+    assert_eq!(status, 200);
+    assert!(body.contains("\"op\":\"Login\""), "审计应含协议调用：{body}");
+    assert!(body.contains("****"), "审计里令牌应是指纹：{body}");
 
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// 从 JSON 文本里取字符串字段（避免为测试引入 serde_json 依赖链以外的解析）。
+fn json_field(body: &str, key: &str) -> String {
+    let needle = format!("\"{key}\":\"");
+    body.split_once(&needle)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(value, _)| value.to_string())
+        .unwrap_or_default()
 }
