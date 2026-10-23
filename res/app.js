@@ -568,13 +568,16 @@ async function loadFields(silent) {
 }
 
 function renderFields() {
-  const d = fields || { mode: 'audit', rules: [], unknown: {} };
+  const d = fields || { mode: 'enforce', rules: [], unknown: {} };
   const enforce = d.mode === 'enforce';
   const rules = d.rules || [];
-  const unknown = [];
-  Object.keys(d.unknown || {}).forEach(db => {
-    Object.keys(d.unknown[db] || {}).forEach(col => unknown.push({ db, column: col, count: d.unknown[db][col] }));
-  });
+  const unknownMap = d.unknown || {};
+  // 数据源名大小写不敏感匹配
+  const unknownByLower = {};
+  Object.keys(unknownMap).forEach(k => { unknownByLower[k.toLowerCase()] = unknownMap[k]; });
+  const sourceNames = ((status && status.sources) || []).map(s => s.name);
+  // 按数据源组织：已配置的 + 规则里出现过的（数据源可能已删）+ 有未登记字段的
+  const dbs = [...new Set([...sourceNames, ...rules.map(r => r.db), ...Object.keys(unknownMap)])];
 
   let html = `
   <div class="card glass-card">
@@ -585,68 +588,99 @@ function renderFields() {
       </span>
     </h2>
     <div class="form-desc">
-      按 <b>数据源 + 列名</b> 管控 <span class="font-mono">/Db/Query</span> 返回的列：
-      <b>拒绝</b> 的列任何情况下都不返回（连 <span class="font-mono">SELECT *</span> 也拿不到）；
-      <b>掩码</b> 保留列、值变 <span class="font-mono">***</span>。
-      <b>未登记列默认不返回</b>（默认强制模式）；需要先观察时切到学习模式（只记审计）。
-      建议：先跑一次业务查询，再到下方「未登记字段」一键允许，然后逐项把敏感列改为拒绝/掩码。
+      <b>字段清单来自实际请求</b>：项目查询返回过哪些列，就出现在对应数据源的「未登记字段」里（已登记的不再列出）。
+      <b>未登记列默认不返回</b>；<b>拒绝</b> 的列连 <span class="font-mono">SELECT *</span> 也拿不到，<b>掩码</b> 保留列、值变 <span class="font-mono">***</span>。
+      新接入：先跑一次业务查询 → 在该数据源下点「一键允许未登记列」→ 再把敏感列改成拒绝/掩码。
     </div>
     <div class="flex-between" style="margin:14px 0">
       <span class="badge ${enforce ? 'badge-red' : 'badge-gray'}">当前模式：${enforce ? '强制 enforce（未登记列不返回）' : '学习 audit（只记录）'}</span>
       <button class="btn btn-secondary btn-sm" onclick="toggleFieldMode(${enforce ? 'false' : 'true'})">
         ${enforce ? '切回学习模式' : '切换到强制模式'}
       </button>
-    </div>`;
+    </div>
+  </div>`;
 
-  if (!rules.length) {
-    html += `<div class="empty-state"><div class="empty-icon">🛡</div><div>还没有规则 —— <b>未登记的列一律不返回</b>；先跑一次查询，再到下方「未登记字段」一键允许</div></div>`;
-  } else {
-    html += `<table class="svc-table">
-      <thead><tr><th>数据源</th><th>列名</th><th>动作</th><th>备注</th><th style="width:150px">操作</th></tr></thead><tbody>`;
-    for (const r of rules) {
-      const cls = r.action === 'allow' ? 'badge-green' : (r.action === 'mask' ? 'badge-gray' : 'badge-red');
-      html += `<tr>
-        <td class="font-mono">${esc(r.db)}</td>
-        <td class="font-mono">${esc(r.column)}</td>
-        <td><span class="badge ${cls}">${FIELD_ACTION_LABEL[r.action] || esc(r.action)}</span></td>
-        <td class="text-muted">${esc(r.note)}</td>
-        <td><div class="svc-actions">
-          <button class="btn btn-ghost btn-sm" onclick="editFieldRule('${esc(r.db)}','${esc(r.column)}')">编辑</button>
-          <button class="btn btn-ghost btn-sm text-red" onclick="removeFieldRule('${esc(r.db)}','${esc(r.column)}')">删除</button>
-        </div></td></tr>`;
-    }
-    html += '</tbody></table>';
+  if (!dbs.length) {
+    html += `<div class="card glass-card"><div class="empty-state"><div class="empty-icon">🛡</div><div>还没有数据源 —— 先在「概览」添加数据源</div></div></div>`;
   }
-  html += `</div>`;
 
-  html += `<div class="card glass-card">
-    <h2>🔍 未登记字段（查询返回过、但没登记策略的列）
-      <span style="margin-left:auto;display:flex;gap:8px">
-        <button class="btn btn-primary btn-sm" onclick="allowAllUnknown()">一键允许全部</button>
-        <button class="btn btn-secondary btn-sm" onclick="loadFields()">刷新</button>
-      </span>
-    </h2>`;
+  for (const db of dbs) {
+    const lower = (db || '').toLowerCase();
+    const dbRules = rules.filter(r => (r.db || '').toLowerCase() === lower);
+    const cols = unknownByLower[lower] || {};
+    const dbUnknown = Object.keys(cols).map(column => ({ column, count: cols[column] }));
+    const available = sourceNames.some(n => n.toLowerCase() === lower);
+    html += `<div class="card glass-card">
+      <h2>🗄 ${esc(db)}
+        ${available ? '' : '<span class="badge badge-red">数据源已删除</span>'}
+        <span class="badge badge-gray">${dbRules.length} 条规则</span>
+        <span style="margin-left:auto;display:flex;gap:8px">
+          <button class="btn btn-primary btn-sm" onclick="editFieldRule(null,'${esc(db)}')">+ 规则</button>
+          ${dbUnknown.length ? `<button class="btn btn-secondary btn-sm" onclick="bulkUnknown('${esc(db)}','allow')">一键允许未登记列（${dbUnknown.length}）</button>` : ''}
+        </span>
+      </h2>`;
 
-  if (!unknown.length) {
-    html += `<div class="empty-state"><div class="empty-icon">🔍</div><div>暂无 —— 项目跑过查询后，这里会列出未登记的列</div></div>`;
-  } else {
-    html += `<table class="svc-table">
-      <thead><tr><th>数据源</th><th>列名</th><th>出现次数</th><th style="width:200px">快速登记</th></tr></thead><tbody>`;
-    for (const u of unknown) {
-      html += `<tr>
-        <td class="font-mono">${esc(u.db)}</td>
-        <td class="font-mono">${esc(u.column)}</td>
-        <td>${u.count}</td>
-        <td><div class="svc-actions">
-          <button class="btn btn-ghost btn-sm" onclick="quickFieldRule('${esc(u.db)}','${esc(u.column)}','allow')">允许</button>
-          <button class="btn btn-ghost btn-sm text-red" onclick="quickFieldRule('${esc(u.db)}','${esc(u.column)}','deny')">拒绝</button>
-        </div></td></tr>`;
+    if (dbUnknown.length) {
+      html += `<div class="form-desc">请求返回过、但还没登记的列：</div>
+      <table class="svc-table"><thead><tr><th>列名</th><th>出现次数</th><th style="width:240px">快速登记</th></tr></thead><tbody>`;
+      for (const u of dbUnknown) {
+        html += `<tr>
+          <td class="font-mono">${esc(u.column)}</td>
+          <td>${u.count}</td>
+          <td><div class="svc-actions">
+            <button class="btn btn-ghost btn-sm" onclick="quickFieldRule('${esc(db)}','${esc(u.column)}','allow')">允许</button>
+            <button class="btn btn-ghost btn-sm text-red" onclick="quickFieldRule('${esc(db)}','${esc(u.column)}','deny')">拒绝</button>
+            <button class="btn btn-ghost btn-sm" onclick="quickFieldRule('${esc(db)}','${esc(u.column)}','mask')">掩码</button>
+          </div></td></tr>`;
+      }
+      html += `</tbody></table>`;
     }
-    html += '</tbody></table>';
+
+    if (dbRules.length) {
+      html += `<table class="svc-table" style="margin-top:10px">
+        <thead><tr><th>列名</th><th>动作</th><th>备注</th><th style="width:150px">操作</th></tr></thead><tbody>`;
+      for (const r of dbRules) {
+        const cls = r.action === 'allow' ? 'badge-green' : (r.action === 'mask' ? 'badge-gray' : 'badge-red');
+        html += `<tr>
+          <td class="font-mono">${esc(r.column)}</td>
+          <td><span class="badge ${cls}">${FIELD_ACTION_LABEL[r.action] || esc(r.action)}</span></td>
+          <td class="text-muted">${esc(r.note)}</td>
+          <td><div class="svc-actions">
+            <button class="btn btn-ghost btn-sm" onclick="editFieldRule('${esc(r.db)}','${esc(r.column)}')">编辑</button>
+            <button class="btn btn-ghost btn-sm text-red" onclick="removeFieldRule('${esc(r.db)}','${esc(r.column)}')">删除</button>
+          </div></td></tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+
+    if (!dbRules.length && !dbUnknown.length) {
+      html += `<div class="empty-state"><div class="empty-icon">🔍</div><div>该数据源还没有字段策略 —— 项目跑一次查询后，这里会列出返回过的列</div></div>`;
+    }
+    html += `</div>`;
   }
-  html += `</div>`;
 
   $('panel-fields').innerHTML = html;
+}
+
+/* 该数据源可选的列名候选：请求返回过的 + 已登记的 */
+function fieldCandidates(db) {
+  const out = new Set();
+  const lower = (db || '').toLowerCase();
+  const map = (fields && fields.unknown) || {};
+  Object.keys(map).forEach(k => {
+    if (k.toLowerCase() === lower) Object.keys(map[k] || {}).forEach(c => out.add(c));
+  });
+  ((fields && fields.rules) || []).forEach(r => {
+    if ((r.db || '').toLowerCase() === lower) out.add(r.column);
+  });
+  return [...out].sort();
+}
+
+function refreshColumnList() {
+  const list = $('f-column-list');
+  if (!list) return;
+  const db = $('f-db') ? $('f-db').value : '';
+  list.innerHTML = fieldCandidates(db).map(c => `<option value="${esc(c)}"></option>`).join('');
 }
 
 function editFieldRule(db, column) {
@@ -658,9 +692,10 @@ function editFieldRule(db, column) {
     || '<option value="">（先添加数据源）</option>';
   showModal(db ? '编辑列策略' : '新增列策略', `
     <label>数据源</label>
-    <select id="f-db" style="margin-bottom:10px">${opts}</select>
-    <label>列名（大小写不敏感）</label>
-    <input type="text" id="f-column" value="${esc(cur.column)}" placeholder="例如 password / mobile" style="margin-bottom:10px">
+    <select id="f-db" style="margin-bottom:10px" onchange="refreshColumnList()">${opts}</select>
+    <label>列名（可从请求返回过的列里选，也支持手填）</label>
+    <input type="text" id="f-column" list="f-column-list" value="${esc(cur.column)}" placeholder="例如 password / mobile" style="margin-bottom:10px">
+    <datalist id="f-column-list"></datalist>
     <label>动作</label>
     <select id="f-action" style="margin-bottom:10px">
       <option value="deny"${cur.action === 'deny' ? ' selected' : ''}>拒绝（永不返回，连 SELECT * 也拿不到）</option>
@@ -683,6 +718,7 @@ function editFieldRule(db, column) {
       await loadFields(true);
     } catch (e) { toast(e.message, 'error'); }
   });
+  refreshColumnList();
 }
 
 async function quickFieldRule(db, column, action) {
@@ -710,23 +746,16 @@ async function toggleFieldMode(toEnforce) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-/* 白名单初始化：把审计里观测到的未登记列批量登记为允许（之后逐项收紧） */
-async function allowAllUnknown() {
-  const dbs = Object.keys((fields && fields.unknown) || {});
-  if (!dbs.length) { toast('暂无未登记字段（先跑一次业务查询）', 'info'); return; }
-  if (!confirm('把当前所有未登记字段登记为「允许」？（之后可再逐项改为拒绝/掩码）')) return;
-  let total = 0;
-  for (const db of dbs) {
-    try {
-      const r = unwrap(await api('/api/fields/bulk', {
-        method: 'POST',
-        body: JSON.stringify({ db, action: 'allow', note: '白名单初始化' }),
-      }));
-      total += (r && r.count) || 0;
-    } catch (e) { toast(e.message, 'error'); }
-  }
-  toast(`已登记 ${total} 个列`, 'success');
-  await loadFields(true);
+/* 按数据源批量登记（columns 省略 = 该库已观测到的未登记列） */
+async function bulkUnknown(db, action) {
+  try {
+    const r = unwrap(await api('/api/fields/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ db, action, note: '批量登记' }),
+    }));
+    toast(`${db}：已登记 ${r.count} 个列`, 'success');
+    await loadFields(true);
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 /* ── 用户（仅内置管理员可见）───────────────────────────── */

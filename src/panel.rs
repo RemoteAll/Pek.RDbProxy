@@ -471,10 +471,28 @@ fn list_fields(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
             })
         })
         .collect();
+    // 未登记字段 = 请求返回过、但**该数据源下仍没有规则**的列（已登记的不再列出）
+    let mut cleaned: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, u64>,
+    > = std::collections::BTreeMap::new();
+    for (db, columns) in proxy.unknown_fields() {
+        let keep: std::collections::BTreeMap<String, u64> = columns
+            .into_iter()
+            .filter(|(column, _)| {
+                !policy.rules.iter().any(|r| {
+                    r.db.eq_ignore_ascii_case(&db) && r.column.eq_ignore_ascii_case(column)
+                })
+            })
+            .collect();
+        if !keep.is_empty() {
+            cleaned.insert(db, keep);
+        }
+    }
     ok(json!({
         "mode": policy.mode.as_str(),
         "rules": rules,
-        "unknown": proxy.unknown_fields(),
+        "unknown": cleaned,
     }))
 }
 
