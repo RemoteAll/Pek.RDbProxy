@@ -260,6 +260,7 @@ function renderOverview() {
         </table>
         <div class="ds-conn">${esc(s.connection)}</div>
         <div class="ds-actions">
+          <button class="btn btn-primary btn-sm" onclick="copyProjectConn('${esc(s.name)}')">复制项目连接串</button>
           <button class="btn btn-secondary btn-sm" onclick="editSource('${esc(s.name)}')">编辑</button>
           <button class="btn btn-ghost btn-sm" onclick="toggleReadOnly('${esc(s.name)}', ${!s.readOnly})">${s.readOnly ? '解除只读' : '设为只读'}</button>
           <button class="btn btn-ghost btn-sm text-red" onclick="removeSource('${esc(s.name)}')">删除</button>
@@ -271,11 +272,33 @@ function renderOverview() {
   html += `</div>`;
 
   const port = (status.server || {}).port || 5599;
+  let host = (status.server || {}).host || '127.0.0.1';
+  if (host === '0.0.0.0' || host === '::') host = '127.0.0.1';
   html += `<div class="card glass-card">
-    <h2>📌 项目侧连接串</h2>
-    <div class="log-content" style="max-height:none">
-Server=http://127.0.0.1:${port};Database=&lt;Name&gt;;Password=&lt;Token&gt;;provider=network</div>
-    <div class="form-desc mt-12">项目里只放这一行，真实账号密码只保存在本机 Config/Proxy.toml；令牌在「编辑数据源」里查看或重新生成。</div>
+    <h2>📌 项目侧连接串怎么用</h2>
+    <table class="info-table">
+      <tr>
+        <td>① 项目里写这一行</td>
+        <td class="font-mono">Server=http://${esc(host)}:${esc(port)};Database=&lt;数据源名&gt;;Password=&lt;该数据源的令牌&gt;;provider=network</td>
+      </tr>
+      <tr>
+        <td>&lt;数据源名&gt;</td>
+        <td>卡片上的<b>名称</b>，例如 <span class="font-mono">demo</span> —— 它对应连接串里的 <span class="font-mono">Database=</span></td>
+      </tr>
+      <tr>
+        <td>&lt;该数据源的令牌&gt;</td>
+        <td>该数据源<b>专属</b>的令牌（每个数据源不同）—— 点卡片上「复制项目连接串」会自动把名称与令牌拼好</td>
+      </tr>
+      <tr>
+        <td>代理机地址</td>
+        <td>项目与代理同机用 <span class="font-mono">127.0.0.1</span>；跨机换成代理机的内网 IP，并在「设置」里打开「允许远程访问」</td>
+      </tr>
+      <tr>
+        <td>② 项目代码里</td>
+        <td class="font-mono">Dal::open(connection, model) / 任何 Pek.RCode 客户端都行 —— 不需要真实数据库账号密码</td>
+      </tr>
+    </table>
+    <div class="form-desc mt-12">真实连接串只保存在本机 <span class="font-mono">Config/Proxy.toml</span>；项目侧只能拿到令牌，即使泄露也拿不到数据库账号。</div>
   </div>`;
 
   $('panel-overview').innerHTML = html;
@@ -391,7 +414,10 @@ async function editSource(name) {
     </div>
     <div class="form-group">
       <label>令牌（项目侧 Password=）</label>
-      <input type="text" id="f-token" value="" placeholder="${s ? '（留空 = 不改）' : '（留空 = 自动生成）'}">
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="f-token" value="" placeholder="${s ? '（留空 = 不改）' : '（留空 = 自动生成）'}" style="flex:1">
+        ${s ? `<button type="button" class="btn btn-secondary btn-sm" onclick="copyToken('${esc(s.name)}')">复制当前令牌</button>` : ''}
+      </div>
       <div class="form-desc">令牌只授权访问本数据源，泄露也不会暴露真实数据库账号</div>
     </div>
     <div class="form-group">
@@ -437,6 +463,46 @@ async function toggleReadOnly(name, readOnly) {
     toast(readOnly ? '已设为只读' : '已解除只读（允许写操作）', readOnly ? 'success' : 'info');
     loadStatus();
   } catch (e) { toast(e.message, 'error'); }
+}
+
+/* ── 复制项目侧连接串（自动带上数据源名与该数据源令牌） ────── */
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* 回退 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+    return true;
+  } catch (e) { return false; }
+}
+
+async function copyToken(name) {
+  try {
+    const got = unwrap(await api('/api/datasource/token', { method: 'POST', body: JSON.stringify({ name }) }));
+    if (await copyText(got.token)) toast('令牌已复制：' + got.token, 'success');
+    else showModal('令牌（请手动复制）', `<div class="font-mono" style="word-break:break-all">${esc(got.token)}</div>`, '知道了', null);
+  } catch (e) { toast(e.message || '获取令牌失败', 'error'); }
+}
+
+async function copyProjectConn(name) {
+  try {
+    const got = unwrap(await api('/api/datasource/token', { method: 'POST', body: JSON.stringify({ name }) }));
+    let host = (status && status.server && status.server.host) || '127.0.0.1';
+    if (host === '0.0.0.0' || host === '::') host = '127.0.0.1';
+    const port = (status && status.server && status.server.port) || 5599;
+    const conn = `Server=http://${host}:${port};Database=${got.name};Password=${got.token};provider=network`;
+    if (await copyText(conn)) {
+      toast('已复制：' + conn, 'success');
+    } else {
+      showModal('项目侧连接串（请手动复制）', `<div class="font-mono" style="word-break:break-all">${esc(conn)}</div>`, '知道了', null);
+    }
+  } catch (e) { toast(e.message || '获取令牌失败', 'error'); }
 }
 
 /* ── 审计 ───────────────────────────────────────────── */
