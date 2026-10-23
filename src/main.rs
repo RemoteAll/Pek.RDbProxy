@@ -52,6 +52,14 @@ fn main() {
         )
     );
     dhrust::logs::init_console_and_file(base.join("Log"), !text_only, LogLevel::Info);
+    // 只要执行过就留痕：纯文本命令（-init/-status/-install…）此前不写日志，
+    // 文件日志是惰性建目录的，导致程序目录里根本没有 Log/。这里先落一条再 flush。
+    dhrust::info!(
+        "Pek.RDbProxy v{VERSION} 执行：args={:?} 程序目录={}",
+        args,
+        base.display()
+    );
+    dhrust::logs::flush();
 
     let code = match args.first().map(String::as_str) {
         Some("-help" | "--help" | "-h") => {
@@ -94,10 +102,13 @@ fn main() {
             }
         }
         Some(other) => {
+            dhrust::warn!("未知参数：{other}");
             eprintln!("未知参数：{other}（用 -help 查看用法）");
             2
         }
     };
+    // 进程退出前必须 flush：日志是异步队列落盘，直接 exit 会丢掉最后几条
+    dhrust::logs::flush();
     std::process::exit(code);
 }
 
@@ -198,6 +209,16 @@ fn status_command(base: &std::path::Path) -> i32 {
             println!("Update/ 有 {pending} 个待升级文件（运行中的实例会自动替换并重启）");
         }
     }
+    let log_dir = base.join("Log");
+    match dhrust::io::latest_file_by_ext(&log_dir, "log") {
+        Some(path) => {
+            println!("日志：{}（{}）", log_dir.display(), path.file_name().unwrap_or_default().to_string_lossy());
+            for line in dhrust::io::read_tail(&path, 3) {
+                println!("      {line}");
+            }
+        }
+        None => println!("日志：{}（尚无）", log_dir.display()),
+    }
     0
 }
 
@@ -290,14 +311,13 @@ fn service_command(base: &std::path::Path, action: &str) -> i32 {
     };
     match result {
         Ok(()) => {
-            println!(
-                "服务 {action} 成功：{}（{}）",
-                service::SERVICE_NAME,
-                manager.query().text()
-            );
+            let state = manager.query().text();
+            dhrust::info!("服务 {action} 成功：{}（{state}）", service::SERVICE_NAME);
+            println!("服务 {action} 成功：{}（{state}）", service::SERVICE_NAME);
             0
         }
         Err(e) => {
+            dhrust::error!("服务 {action} 失败：{e}");
             eprintln!("服务 {action} 失败：{e}");
             1
         }
@@ -371,6 +391,7 @@ fn run_command(base: std::path::PathBuf) -> i32 {
     let cfg = match config::load(&base) {
         Ok(cfg) => cfg,
         Err(e) => {
+            dhrust::error!("读取配置失败：{e}");
             eprintln!("{e}");
             return 1;
         }
@@ -378,6 +399,7 @@ fn run_command(base: std::path::PathBuf) -> i32 {
     let proxy = match Proxy::open(&base, &cfg) {
         Ok(proxy) => Arc::new(proxy),
         Err(e) => {
+            dhrust::error!("启动失败：{e}");
             eprintln!("启动失败：{e}");
             return 1;
         }
@@ -411,6 +433,7 @@ fn run_command(base: std::path::PathBuf) -> i32 {
     let listener = match Listener::bind(&address, "rdbproxy-web", handler, options) {
         Ok(listener) => listener,
         Err(e) => {
+            dhrust::error!("监听失败（{address}）：{e}");
             eprintln!("监听失败（{address}）：{e}");
             return 1;
         }

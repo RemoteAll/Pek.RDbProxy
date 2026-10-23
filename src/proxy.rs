@@ -178,10 +178,14 @@ pub struct Proxy {
     registry: RwLock<Registry>,
     audit: Mutex<VecDeque<AuditEntry>>,
     started: Instant,
+    /// 未登记字段观测（审计用）
+    unknown_fields: crate::policy::UnknownFields,
     /// 监听地址热重绑钩子（由宿主注册；返回新的监听地址）
     rebind: RwLock<Option<RebindHook>>,
     /// 最近一次防火墙操作结果（面板展示）
     firewall_note: RwLock<String>,
+    /// 字段级安全策略（「表管理」）
+    policy: RwLock<crate::policy::Policy>,
 }
 
 /// 监听地址热重绑钩子：入参为新的服务端配置，返回实际监听地址。
@@ -205,6 +209,8 @@ impl Proxy {
             started: Instant::now(),
             rebind: RwLock::new(None),
             firewall_note: RwLock::new(String::new()),
+            policy: RwLock::new(crate::policy::load(base)),
+            unknown_fields: crate::policy::UnknownFields::default(),
         };
         // 启动即把仍是明文的连接串加密写回（存盘不再有明文密码）
         match proxy.migrate_encrypt() {
@@ -648,10 +654,15 @@ impl Proxy {
                 self.record(&source.name, action, &token, "", started, true, 0, String::new());
                 db_ok(json!({ "DbType": info.db_type, "Version": info.version }))
             }
-            ("POST", "Query") => match service.query_packet(dal, &sql, parameters.as_ref()) {
-                Ok(packet) => {
-                    self.record(&source.name, action, &token, &sql, started, true, -1, String::new());
-                    HttpResponse::bytes(200, "application/octet-stream", packet)
+            ("POST", "Query") => match service.query(dal, &sql, parameters.as_ref()) {
+                Ok(set) => {
+                    let (filtered, note) = self.apply_field_policy(&source.name, set);
+                    self.record(&source.name, action, &token, &sql, started, true, -1, note);
+                    HttpResponse::bytes(
+                        200,
+                        "application/octet-stream",
+                        pek_rcode::dbtable::encode_rowset(&filtered),
+                    )
                 }
                 Err(e) => {
                     self.record(&source.name, action, &token, &sql, started, false, 0, e.to_string());
@@ -720,6 +731,72 @@ impl Proxy {
                 "未知路由（支持 Login/Query/Execute/InsertAndGetIdentity/QueryCount/GetTables）",
             ),
         }
+    }
+
+    /// 字段策略快照。
+    pub fn policy_snapshot(&self) -> crate::policy::Policy {
+        self.policy
+            .read()
+            .map(|p| p.clone())
+            .unwrap_or_default()
+    }
+
+    /// 保存字段策略（内存 + 落盘）。
+    pub fn save_policy(&self, policy: crate::policy::Policy) -> Result<(), String> {
+        crate::policy::save(&self.base, &policy)?;
+        *self.policy.write().map_err(|_| "状态锁异常".to_string())? = policy;
+        Ok(())
+    }
+
+    /// 按字段策略裁剪结果集，返回（裁剪后结果集，审计备注）。
+    ///
+    /// - `allow`：保留
+    /// - `mask`：v1 等同 `deny`（不返回）；后续可扩展为脱敏值
+    /// - `deny` / 未登记（`enforce`）：剔除该列
+    /// - 未登记（`audit`）：保留，但记录列名供「字段策略」页登记
+    fn apply_field_policy(
+        &self,
+        db: &str,
+        set: pek_rcode::session::RowSet,
+    ) -> (pek_rcode::session::RowSet, String) {
+        use crate::policy::Action;
+        let policy = self.policy_snapshot();
+        let mut keep: Vec<usize> = Vec::with_capacity(set.columns.len());
+        let mut unknown: Vec<String> = Vec::new();
+        let mut dropped: Vec<String> = Vec::new();
+        for (index, column) in set.columns.iter().enumerate() {
+            let (action, registered) = policy.decide(db, column);
+            if !registered {
+                unknown.push(column.clone());
+            }
+            match action {
+                Action::Allow => keep.push(index),
+                Action::Mask | Action::Deny => dropped.push(column.clone()),
+            }
+        }
+        if !unknown.is_empty() {
+            self.unknown_fields.observe(db, &unknown);
+        }
+        if !dropped.is_empty() || !unknown.is_empty() {
+            let mut note = String::new();
+            if !dropped.is_empty() {
+                note.push_str(&format!("字段已拦截：{}", dropped.join(",")));
+            }
+            if !unknown.is_empty() {
+                if !note.is_empty() {
+                    note.push('；');
+                }
+                note.push_str(&format!("未登记字段：{}", unknown.join(",")));
+            }
+            dhrust::warn!("db={db} {note}");
+            return (set.project(&keep), note);
+        }
+        (set, String::new())
+    }
+
+    /// 未登记字段快照（面板展示）。
+    pub fn unknown_fields(&self) -> BTreeMap<String, BTreeMap<String, u64>> {
+        self.unknown_fields.snapshot()
     }
 
     /// 记账：统计 + 审计（内存环形 + 日志文件）。

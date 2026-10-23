@@ -165,11 +165,36 @@ cd H:\Run\pek-rdbproxy
 .\install.ps1
 ```
 
-若提示「禁止运行脚本」（执行策略限制）：
+**Q1b `无法加载文件 …\install.ps1，因为在此系统上禁止运行脚本`（UnauthorizedAccess / PSSecurityException）**
+
+这是 PowerShell 的**执行策略**（ExecutionPolicy）拦截，与脚本本身无关。四种解法，任选其一：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -RegisterAgent
+# 方案 1（推荐，不改变系统设置）：只对本次执行放行
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+
+# 方案 2：只对当前这个终端窗口放行，之后在本窗口内可直接 .\install.ps1
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+
+# 方案 3：对当前用户永久放行「本地脚本」（需管理员，安全但宽松）
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+
+# 方案 4：组策略限制（企业环境常见，方案 1/2/3 都可能被覆盖）
+#   查看生效来源：Get-ExecutionPolicy -List
+#   若 MachinePolicy / UserPolicy 为 Restricted，需 IT 在组策略里放开，或改用
+#   「用 cmd 直接跑 exe」的替代路径（见下）
 ```
+
+替代路径（完全绕开 .ps1 执行策略）：
+
+```powershell
+cd H:\Run\pek-rdbproxy
+.\pek-rdbproxy.exe -init          # 生成 Config/Proxy.toml
+.\pek-rdbproxy.exe -install       # 注册并启动 Windows 服务
+.\pek-rdbproxy.exe -RegisterAgent # 可选：注册星尘托管
+```
+
+即 `install.ps1` 做的事只是这三条命令 + 复制程序，手动执行等价。
 
 **Q2 服务注册失败 / 防火墙规则没加上**
 
@@ -177,13 +202,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -RegisterAgent
 
 **Q3 面板打不开 / 远程访问不通**
 
-1. 确认在跑：`Get-Service PekRDbProxy` 或 `.\pek-rdbproxy.exe -status`
-2. 本机访问 http://127.0.0.1:5599/
-3. 远程访问：面板「设置」勾选「允许远程访问」—— **即时生效，无需重启**；程序会自动用 `netsh advfirewall`（Linux 为 firewalld/ufw/iptables）放行该 TCP 端口
-4. 自动放行失败（多半是没管理员权限）时手动执行：
+1. 先看日志 `Log\yyyy_MM_dd.log`（`.\pek-rdbproxy.exe -status` 末行会打印日志目录与最近 3 行）
+2. 确认在跑：`Get-Service PekRDbProxy` 或 `.\pek-rdbproxy.exe -status`
+3. 本机访问 http://127.0.0.1:5599/
+4. 远程访问：面板「设置」勾选「允许远程访问」—— **即时生效，无需重启**；程序会自动用 `netsh advfirewall`（Linux 为 firewalld/ufw/iptables）放行该 TCP 端口
+5. 自动放行失败（多半是没管理员权限）时手动执行：
    `netsh advfirewall firewall add rule name="PekRDbProxy" dir=in action=allow protocol=TCP localport=5599`
-5. 云服务器还需在**安全组**放行同一端口
-6. 对外开放前把鉴权级别设为 `Full` 并先改掉默认密码
+6. 云服务器还需在**安全组**放行同一端口
+7. 对外开放前把鉴权级别设为 `Full` 并先改掉默认密码
 
 **Q4 忘记面板密码**
 
@@ -206,6 +232,44 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -RegisterAgent
 
 设置页「⬆ 在线升级」上传新程序；或把程序放进 `Update/` 目录；星尘托管下也可直接覆盖源程序文件。约 10 秒自动替换并重启。
 
+## 字段级安全（表管理 / 列策略）
+
+针对「有些字段无论如何都不能返回，但 ORM 默认 `SELECT *` 会请求所有列」的场景：
+
+策略存放在 `Config/field-policy.json`（本机，不入库），按 **数据源 + 列名**（大小写不敏感）登记：
+
+| 动作 | 含义 | `audit` 模式 | `enforce` 模式 |
+|---|---|---|---|
+| `allow` | 允许返回 | 返回 | 返回 |
+| `mask` | 脱敏（v1 等同不返回） | 按 `allow` 处理并记录 | **不返回** |
+| `deny` | **永不返回** | **不返回**（硬拒绝，与模式无关） | **不返回** |
+| 未登记（有备注但没设 action 也算未登记） | 按模式默认 | 返回 + 记审计「未登记字段」 | 不返回 |
+
+要点：
+
+- **`deny` 是硬拒绝**：即使 `audit`（学习）模式也**不会**返回该列 —— 这是给"绝对不能出去"的字段用的（密码、密钥、手机号等）。
+- 请求方用 `SELECT *` 时，返回的结果集里**直接没有这一列**（不是空值）。ORM 按列名取会得到"字段不存在"，比返回空值安全——空值会和真实的 NULL 混淆。
+- 每次拦截都会写入审计：「字段已拦截：a,b」「未登记字段：c,d」，可在面板「SQL 审计」看到，并据此登记。
+- **元数据接口（GetTables / GetSchema）不受约束**，只约束查询的数据行。
+- 建议流程：先用 `audit` 跑一段时间 → 看审计里的「未登记字段」→ 批量登记 → 再切 `enforce`。
+
+## 日志
+
+程序目录下的 `Log/`，与 Pek 系其它服务同一套实现（`dhrust::logs`，格式对齐 DH.NCore）：
+
+```
+H:\Run\pek-rdbproxy\Log\2026_10_23.log
+```
+
+- 文件名 `yyyy_MM_dd.log`；单文件 10MB 封顶后拆 `_2`、`_3`…；目录内最多留 200 个文件（自动删最旧）。
+- 行格式 `时间 线程ID 类型 名称 正文`，UTF-8 + CRLF，文件头 4 行字段说明（与 C# DH.NCore 的日志文件同款）。
+- **只要执行过就一定有**：`-init` / `-status` / `-token` / `-install`… 都会落一条
+  `Pek.RDbProxy v… 执行：args=[…] 程序目录=…`；进程退出前强制 flush，不会丢最后几条。
+- 写什么：启动与监听地址、端口热重绑、防火墙放行、数据源增删改、面板登录成功/失败、
+  每次 `/Db/*` 调用（`db=… op=… ok/FAIL … rows=… …us sql=…`）、字段策略拦截、自升级全过程。
+- 排障：`.\pek-rdbproxy.exe -status` 末行会打印日志目录、当日文件名与**最近 3 行**。
+- 程序目录不可写时（只读介质等）文件日志静默失败、不影响服务运行，`-status` 里没有「日志：」行即说明没写成。
+
 ## 安全
 
 - **写盘加密**：`Config/Proxy.toml` 里的连接串一律以 `enc:v1:`（AES-256-GCM）保存，密钥在 `Config/.key`（Unix 权限 600）；启动时自动把仍是明文的连接串加密迁移。
@@ -217,7 +281,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -RegisterAgent
 ## 开发
 
 ```powershell
-cargo test --offline                    # 9 单测 + 2 端到端
+cargo test --offline                    # 12 单测 + 2 端到端
 cargo clippy --all-targets --offline    # 0 告警
 ```
 

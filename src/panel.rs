@@ -65,6 +65,10 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     router.map_post("/api/readonly", guard(Arc::clone(&proxy), set_read_only));
     router.map_post("/api/server", guard(Arc::clone(&proxy), save_server));
     router.map_post("/api/upgrade", guard(Arc::clone(&proxy), upgrade));
+    router.map_get("/api/fields", guard(Arc::clone(&proxy), list_fields));
+    router.map_post("/api/fields", guard(Arc::clone(&proxy), save_field));
+    router.map_post("/api/fields/delete", guard(Arc::clone(&proxy), delete_field));
+    router.map_post("/api/fields/mode", guard(Arc::clone(&proxy), set_field_mode));
 
     // ── 数据库代理协议（对齐 C# `DbController`；鉴权走各数据源令牌）
     router.map_post("/Db/{action}", db_call(Arc::clone(&proxy), "POST"));
@@ -310,6 +314,76 @@ fn upgrade(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
         "bytes": body.len(),
         "note": "已写入 Update/，约 10 秒后自动替换并重启（面板会短暂断开）"
     }))
+}
+
+/// `GET /api/fields`：字段策略（模式 + 规则 + 未登记字段观测）。
+fn list_fields(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
+    let policy = proxy.policy_snapshot();
+    let rules: Vec<Value> = policy
+        .rules
+        .iter()
+        .map(|r| {
+            json!({
+                "db": r.db,
+                "column": r.column,
+                "action": r.action.as_str(),
+                "note": r.note,
+            })
+        })
+        .collect();
+    ok(json!({
+        "mode": policy.mode.as_str(),
+        "rules": rules,
+        "unknown": proxy.unknown_fields(),
+    }))
+}
+
+/// `POST /api/fields`：新增/更新一条列策略。
+fn save_field(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    let body = json_body(ctx);
+    let db = text(&body, "db");
+    let column = text(&body, "column");
+    if db.is_empty() || column.is_empty() {
+        return fail(400, "数据源与列名不能为空");
+    }
+    let mut policy = proxy.policy_snapshot();
+    policy.upsert(crate::policy::Rule {
+        db,
+        column,
+        action: crate::policy::Action::parse(&text(&body, "action")),
+        note: text(&body, "note"),
+    });
+    match proxy.save_policy(policy) {
+        Ok(()) => ok(json!({ "ok": true })),
+        Err(e) => fail(500, &e),
+    }
+}
+
+/// `POST /api/fields/delete`：删除一条列策略。
+fn delete_field(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    let body = json_body(ctx);
+    let db = text(&body, "db");
+    let column = text(&body, "column");
+    let mut policy = proxy.policy_snapshot();
+    if !policy.remove(&db, &column) {
+        return fail(404, "规则不存在");
+    }
+    match proxy.save_policy(policy) {
+        Ok(()) => ok(json!({ "ok": true })),
+        Err(e) => fail(500, &e),
+    }
+}
+
+/// `POST /api/fields/mode`：切换生效模式（`audit` / `enforce`）。
+fn set_field_mode(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    let body = json_body(ctx);
+    let mut policy = proxy.policy_snapshot();
+    policy.mode = crate::policy::Mode::parse(&text(&body, "mode"));
+    let mode = policy.mode.as_str();
+    match proxy.save_policy(policy) {
+        Ok(()) => ok(json!({ "mode": mode })),
+        Err(e) => fail(500, &e),
+    }
 }
 
 /// `POST /api/readonly`：切换只读（立即持久化）。

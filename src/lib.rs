@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod panel;
+pub mod policy;
 pub mod proxy;
 pub mod service;
 
