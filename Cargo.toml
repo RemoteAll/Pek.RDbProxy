@@ -8,7 +8,7 @@ readme = "README.md"
 
 [dependencies]
 # 基础库（日志 / 配置 / 安全随机 / 可逆加密 / HTTP 服务）
-dhrust = { path = "../DH.RustBase", default-features = false, features = ["net", "toml"] }
+dhrust = { path = "../DH.RustBase", default-features = false, features = ["net", "toml", "secret"] }
 # ORM + 驱动（默认只带常用驱动，其余按需在下面加 driver-* 特性）
 pek-rcode = { path = "../Pek.RCode", default-features = false, features = [
     "database",
@@ -19,4 +19,6 @@ pek-rcode = { path = "../Pek.RCode", default-features = false, features = [
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+toml = "1"
+chrono = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }

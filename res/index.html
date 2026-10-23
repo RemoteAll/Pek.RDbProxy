@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pek.RDbProxy · 数据库代理</title>
+<style>
+  :root {
+    --bg: #0f172a; --card: #1e293b; --line: #334155; --text: #e2e8f0;
+    --muted: #94a3b8; --accent: #38bdf8; --ok: #22c55e; --bad: #ef4444; --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 14px 22px;
+    border-bottom: 1px solid var(--line); background: #111c33;
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  main { padding: 20px 22px 60px; max-width: 1500px; margin: 0 auto; }
+  h2 { font-size: 15px; margin: 22px 0 10px; color: var(--muted); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card .top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .card .name { font-weight: 600; font-size: 15px; }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .tag.ok { color: var(--ok); border-color: #14532d; background: #052e16; }
+  .tag.bad { color: var(--bad); border-color: #7f1d1d; background: #450a0a; }
+  .tag.ro { color: var(--warn); border-color: #78350f; background: #451a03; }
+  .kv { display: grid; grid-template-columns: 88px 1fr; gap: 4px 10px; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
+  .conn { color: #7dd3fc; }
+  .err { color: var(--bad); font-size: 12px; margin-top: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #26364f; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; position: sticky; top: 57px; background: #16233b; }
+  tr:hover td { background: #1b2a45; }
+  td.sql { max-width: 640px; }
+  td.sql span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  button {
+    background: #1d4ed8; color: #fff; border: 0; border-radius: 6px; padding: 5px 12px;
+    font-size: 12.5px; cursor: pointer;
+  }
+  button:hover { background: #2563eb; }
+  button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  select, input[type=password] {
+    background: #0b1220; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font-size: 12.5px;
+  }
+  .tabs { display: flex; gap: 6px; }
+  .tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); border-radius: 0; padding: 6px 10px; }
+  .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .login { max-width: 380px; margin: 90px auto; text-align: center; }
+  .login input { width: 100%; margin: 12px 0; }
+  .hidden { display: none !important; }
+  .foot { color: var(--muted); font-size: 12px; margin-top: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🗄 Pek.RDbProxy</h1>
+  <span class="sub" id="uptime">—</span>
+  <div class="spacer"></div>
+  <div class="tabs">
+    <button data-panel="overview" class="active">概览</button>
+    <button data-panel="audit">SQL 审计</button>
+  </div>
+  <button class="ghost" id="btn-refresh">刷新</button>
+</header>
+
+<main>
+  <section id="login" class="login hidden">
+    <h2 style="color:var(--text);font-size:16px">需要面板令牌</h2>
+    <p class="sub">填写 <span class="mono">Config/Proxy.toml</span> 里的 <span class="mono">AdminToken</span></p>
+    <input type="password" id="token-input" placeholder="AdminToken" />
+    <button id="btn-login">登录</button>
+    <p class="foot" id="login-error"></p>
+  </section>
+
+  <section id="panel-overview" class="hidden">
+    <h2>数据源（真实连接串已脱敏；只读开关仅运行期生效）</h2>
+    <div class="grid" id="sources"></div>
+    <p class="foot">
+      项目侧连接串：<span class="mono conn" id="client-hint">Server=http://127.0.0.1:&lt;Port&gt;;Database=&lt;Name&gt;;Password=&lt;Token&gt;;provider=network</span>
+    </p>
+  </section>
+
+  <section id="panel-audit" class="hidden">
+    <h2>
+      SQL 审计（内存环形 500 条，同时写 Log/）
+      <select id="audit-limit" style="margin-left:8px">
+        <option value="50">最近 50</option>
+        <option value="100" selected>最近 100</option>
+        <option value="300">最近 300</option>
+        <option value="500">最近 500</option>
+      </select>
+    </h2>
+    <div class="card" style="padding:0;overflow:auto;max-height:70vh">
+      <table>
+        <thead>
+          <tr><th>时间</th><th>数据源</th><th>操作</th><th>结果</th><th>耗时</th><th>行数</th><th>令牌</th><th>SQL / 错误</th></tr>
+        </thead>
+        <tbody id="audit-body"><tr><td colspan="8" class="sub">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const KEY = 'rdbproxy_token';
+let currentTab = 'overview';
+let timer = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtUs = (us) => us >= 1000 ? (us / 1000).toFixed(1) + ' ms' : (us || 0) + ' µs';
+const fmtUptime = (secs) => {
+  const d = Math.floor(secs / 86400), h = Math.floor(secs % 86400 / 3600),
+        m = Math.floor(secs % 3600 / 60), s = secs % 60;
+  return (d ? d + ' 天 ' : '') + (h ? h + ' 时 ' : '') + m + ' 分 ' + s + ' 秒';
+};
+
+function showLogin(message) {
+  $('login').classList.remove('hidden');
+  $('panel-overview').classList.add('hidden');
+  $('panel-audit').classList.add('hidden');
+  $('login-error').textContent = message || '';
+}
+
+async function api(path, options) {
+  const headers = Object.assign({}, (options && options.headers) || {});
+  const token = sessionStorage.getItem(KEY);
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  if (options && options.body) headers['Content-Type'] = 'application/json';
+  let res;
+  try {
+    res = await fetch(path, Object.assign({}, options, { headers }));
+  } catch (e) {
+    throw new Error('请求失败：' + e.message);
+  }
+  if (res.status === 401) {
+    showLogin('令牌无效或已过期');
+    throw new Error('unauthorized');
+  }
+  const json = await res.json().catch(() => ({ ok: false, message: 'HTTP ' + res.status }));
+  if (!json.ok) throw new Error(json.message || ('HTTP ' + res.status));
+  return json.data;
+}
+
+function sourceCard(s) {
+  const status = s.available
+    ? '<span class="tag ok">可用</span>'
+    : '<span class="tag bad">不可用</span>';
+  const ro = s.readOnly ? '<span class="tag ro">只读</span>' : '';
+  return `<div class="card">
+    <div class="top">
+      <span class="name">${esc(s.name)}</span>
+      ${status}${ro}
+      <span class="tag">${esc(s.kind || '-')}</span>
+      <span style="flex:1"></span>
+      <button class="ghost" data-toggle="${esc(s.name)}" data-next="${s.readOnly ? 'false' : 'true'}">
+        ${s.readOnly ? '解除只读' : '设为只读'}
+      </button>
+    </div>
+    <div class="kv">
+      <span class="k">备注</span><span>${esc(s.description || '-')}</span>
+      <span class="k">令牌</span><span>${s.tokenSet ? '已设置' : '<span class="bad">未设置（本机免令牌）</span>'}</span>
+      <span class="k">请求</span><span>${s.requests} 次 / 失败 ${s.failures} 次</span>
+      <span class="k">平均耗时</span><span>${fmtUs(s.avgUs)}</span>
+      <span class="k">连接</span><span class="mono conn">${esc(s.connection)}</span>
+    </div>
+    ${s.error ? `<div class="err">${esc(s.error)}</div>` : ''}
+    ${s.lastError ? `<div class="err">最近错误：${esc(s.lastError)}</div>` : ''}
+  </div>`;
+}
+
+async function loadOverview() {
+  const data = await api('/api/status');
+  $('uptime').textContent = '运行 ' + fmtUptime(data.uptimeSecs) +
+    (data.allowRemote ? ' · 允许远程' : ' · 仅本机');
+  $('sources').innerHTML = data.sources.map(sourceCard).join('') ||
+    '<div class="card">尚未配置数据源（编辑 Config/Proxy.toml 后重启）</div>';
+  document.querySelectorAll('[data-toggle]').forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api('/api/toggle', {
+          method: 'POST',
+          body: JSON.stringify({ db: btn.dataset.toggle, readOnly: btn.dataset.next === 'true' }),
+        });
+        await loadOverview();
+      } catch (e) {
+        if (e.message !== 'unauthorized') alert(e.message);
+      }
+    };
+  });
+}
+
+async function loadAudit() {
+  const limit = $('audit-limit').value;
+  const rows = await api('/api/audit?n=' + encodeURIComponent(limit));
+  if (!rows.length) {
+    $('audit-body').innerHTML = '<tr><td colspan="8" class="sub">暂无记录</td></tr>';
+    return;
+  }
+  $('audit-body').innerHTML = rows.map((r) => `<tr>
+    <td class="mono">${esc(r.at)}</td>
+    <td>${esc(r.db)}</td>
+    <td>${esc(r.op)}</td>
+    <td class="${r.ok ? 'ok' : 'bad'}">${r.ok ? '成功' : '失败'}</td>
+    <td class="mono">${fmtUs(r.micros)}</td>
+    <td class="mono">${r.rows >= 0 ? r.rows : '-'}</td>
+    <td class="mono">${esc(r.token)}</td>
+    <td class="sql mono"><span title="${esc(r.error || r.sql)}">${esc(r.error || r.sql || '-')}</span></td>
+  </tr>`).join('');
+}
+
+async function refresh() {
+  try {
+    if (currentTab === 'overview') {
+      $('panel-overview').classList.remove('hidden');
+      $('panel-audit').classList.add('hidden');
+      await loadOverview();
+    } else {
+      $('panel-overview').classList.add('hidden');
+      $('panel-audit').classList.remove('hidden');
+      await loadAudit();
+    }
+  } catch (e) {
+    if (e.message !== 'unauthorized') console.warn(e);
+  }
+}
+
+function schedule() {
+  clearInterval(timer);
+  timer = setInterval(refresh, currentTab === 'overview' ? 3000 : 5000);
+}
+
+document.querySelectorAll('.tabs button').forEach((btn) => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentTab = btn.dataset.panel;
+    schedule();
+    refresh();
+  };
+});
+
+$('btn-refresh').onclick = refresh;
+$('audit-limit').onchange = refresh;
+$('btn-login').onclick = async () => {
+  sessionStorage.setItem(KEY, $('token-input').value.trim());
+  $('login').classList.add('hidden');
+  await refresh();
+};
+$('token-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('btn-login').click();
+});
+
+// 首次进入：先探测（本机无令牌时直接可用）
+(async () => {
+  try {
+    await api('/api/ping');
+    await refresh();
+  } catch (e) {
+    if (e.message !== 'unauthorized') showLogin(e.message);
+  }
+  schedule();
+})();
+</script>
+</body>
+</html>
