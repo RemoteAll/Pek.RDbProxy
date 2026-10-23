@@ -1,0 +1,9 @@
+# 国内镜像（缺这个文件首次编译会从 crates.io 慢速拉包）
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[net]
+git-fetch-with-cli = true

@@ -1,0 +1,14 @@
+# Rust 构建产物
+/target
+
+# 真实连接串所在目录（**绝对不要入库**：本工具存在的意义就是不让凭据进项目）
+/Config
+# 加密连接串时使用的本机密钥（-encrypt 生成）
+Config/.key
+
+# 日志 / 数据
+/Log
+/Data
+*.db
+*.db-shm
+*.db-wal

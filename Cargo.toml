@@ -1,0 +1,22 @@
+[package]
+name = "pek-rdbproxy"
+version = "0.1.0"
+edition = "2024"
+description = "本地数据库代理：项目侧只见代理地址与令牌，真实连接串只留在代理端"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+# 基础库（日志 / 配置 / 安全随机 / 可逆加密 / HTTP 服务）
+dhrust = { path = "../DH.RustBase", default-features = false, features = ["net", "toml"] }
+# ORM + 驱动（默认只带常用驱动，其余按需在下面加 driver-* 特性）
+pek-rcode = { path = "../Pek.RCode", default-features = false, features = [
+    "database",
+    "driver-mysql",
+    "driver-postgresql",
+    "driver-sqlserver",
+    "tls-native",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
