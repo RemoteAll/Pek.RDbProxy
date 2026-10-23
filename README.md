@@ -118,11 +118,48 @@ Description = "本地演示"
 
 成功返回**裸**结果（无 `ok` 信封），失败返回 `{"code": <int>, "msg": "…"}`。
 
+## 部署
+
+打好的包在 `dist/`（不入库）：`pek-rdbproxy-v<版本>-win-x64.zip` / `-linux-x64.tar.gz` / `-linux-arm64.tar.gz` + `SHA256SUMS`。
+
+```powershell
+# Windows（解压后同目录执行）
+.\install.ps1                          # 装到 C:\PekRDbProxy 并注册为 Windows 服务
+.\install.ps1 -RegisterAgent           # 同时注册到星尘（影子模式）
+.\install.ps1 -Target D:\Apps\RDbProxy # 自定义目录
+```
+
+```bash
+# Linux（解压后执行）
+sudo ./install.sh ./pek-rdbproxy /opt/PekRDbProxy
+# 检测到 StarAgent 会自动注册托管；否则稍后手动：
+/opt/PekRDbProxy/pek-rdbproxy -RegisterAgent
+```
+
+打包：
+
+```powershell
+.\scripts\pack.ps1              # 版本 +1，Windows + Linux x64/arm64（zig 交叉 musl 静态）
+.\scripts\pack.ps1 -Targets linux
+.\scripts\pack.ps1 -NoBump -SkipBuild   # 只重新打包已有产物
+```
+
+### 在线升级
+
+三种方式任选，都会在 **10 秒内**自动完成替换并重启：
+
+1. **面板** → 设置 → 「⬆ 在线升级」→ 选择新程序 → 上传并升级
+2. 把程序拷进 `Update/` 目录（文件名随意）
+3. 星尘托管下直接覆盖源程序文件（影子模式，运行中的文件不被占用）
+
+升级过程：写入 `Update/` → 静置 10 秒 → PE/ELF 校验 → 原子替换（Windows 先改名让位）→ 退出并由服务/星尘拉起。失败会改名成 `*.failed` 并记日志。
+
 ## 安全
 
+- **写盘加密**：`Config/Proxy.toml` 里的连接串一律以 `enc:v1:`（AES-256-GCM）保存，密钥在 `Config/.key`（Unix 权限 600）；启动时自动把仍是明文的连接串加密迁移。
 - 默认只读；写操作需在面板显式解除。
-- 所有请求带令牌；令牌只以 `****` + 指纹形式出现在审计里。
-- WAF 全站生效，`/Db` 豁免攻击特征（由只读护栏兜底）。
+- 所有请求带令牌；审计里令牌只留指纹（`Ve-g****j5aA`）。
+- WAF 全站生效，`/Db` 与 `/api/upgrade` 豁免攻击特征（分别由只读护栏与文件头校验兜底）。
 - `AllowRemote=false` 时非回环请求直接拒绝；面板鉴权级别可设 `Full`（全部需 JWT）。
 
 ## 开发

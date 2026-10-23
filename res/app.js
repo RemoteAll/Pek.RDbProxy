@@ -298,7 +298,7 @@ function renderOverview() {
         <td class="font-mono">Dal::open(connection, model) / 任何 Pek.RCode 客户端都行 —— 不需要真实数据库账号密码</td>
       </tr>
     </table>
-    <div class="form-desc mt-12">真实连接串只保存在本机 <span class="font-mono">Config/Proxy.toml</span>；项目侧只能拿到令牌，即使泄露也拿不到数据库账号。</div>
+    <div class="form-desc mt-12">真实连接串以 <span class="font-mono">enc:v1:</span>（AES-256-GCM）加密后只保存在本机 <span class="font-mono">Config/Proxy.toml</span>（密钥 <span class="font-mono">Config/.key</span>）；项目侧只能拿到令牌，即使令牌泄露也拿不到数据库账号。</div>
   </div>`;
 
   $('panel-overview').innerHTML = html;
@@ -407,10 +407,10 @@ async function editSource(name) {
       <div class="form-desc" id="f-kind-hint">与 Pek.RPanlServer 同一套模板：选类型 → 自动填好连接串 → 只改地址/账号密码</div>
     </div>
     <div class="form-group">
-      <label>连接串（Pek.RCode 格式，支持 enc:v1: 加密值）</label>
+      <label>连接串（保存时自动加密为 enc:v1:；也可直接粘贴已有密文）</label>
       <textarea id="f-conn" rows="6" spellcheck="false" autocomplete="off"
         placeholder="Server=127.0.0.1;Port=3306;Database=demo;Uid=root;Pwd=xxx;Provider=MySql">${esc(current || (s ? '' : DB_TEMPLATES.sqlite))}</textarea>
-      <div class="form-desc">${s ? '已回填当前连接串（真实值，可直接修改）；清空则保持原值' : '选好类型后模板会自动填入，按实际情况改地址与账号密码'}</div>
+      <div class="form-desc">${s ? '已回填当前连接串（已解密为真实值，可直接修改）；清空则保持原值，保存后自动加密' : '选好类型后模板会自动填入，按实际情况改地址与账号密码；保存时自动加密'}</div>
     </div>
     <div class="form-group">
       <label>令牌（项目侧 Password=）</label>
@@ -621,8 +621,8 @@ function loadSettings() {
       <tr><td>程序</td><td>Pek.RDbProxy v${esc(status.version || '0.1.0')}</td></tr>
       <tr><td>运行时长</td><td>${fmtUptime(status.uptimeSecs)}</td></tr>
       <tr><td>数据源</td><td>${(status.sources || []).length} 个（${(status.sources || []).map(x => esc(x.name)).join('、') || '—'}）</td></tr>
-      <tr><td>配置文件</td><td class="font-mono">Config/Proxy.toml（真实连接串只在本机）</td></tr>
-      <tr><td>升级方式</td><td>把新程序放入 Update/ 目录，10 秒后自动替换并重启</td></tr>
+      <tr><td>配置文件</td><td class="font-mono">Config/Proxy.toml（连接串已加密；密钥 Config/.key）</td></tr>
+      <tr><td>升级方式</td><td>设置页「⬆ 在线升级」上传，或把程序放入 Update/（10 秒后自动替换重启）</td></tr>
     </table>
   </div>`;
   $('panel-settings').innerHTML = html;
