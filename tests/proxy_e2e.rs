@@ -252,6 +252,16 @@ fn field_policy_masks_and_blocks_columns() {
 
     let base = temp_dir("field-policy");
     let proxy = build_proxy(&base, true, "");
+    let addr = serve(Arc::clone(&proxy));
+    let client = DbClient::new(format!("http://{addr}"), "demo", Some("tk-test-123456"));
+    client.login().expect("登录");
+
+    // 默认 enforce，但**策略为空**时视为未启用：不裁剪任何列
+    let set = client
+        .query_rowset("SELECT Id, Name FROM t", None)
+        .expect("查询应成功");
+    assert_eq!(set.columns.len(), 2, "空策略不应裁剪：{:?}", set.columns);
+
     let mut policy = proxy.policy_snapshot();
     policy.mode = Mode::Enforce;
     // enforce 下未登记列默认不返回，所以常规列要显式 allow
@@ -268,9 +278,6 @@ fn field_policy_masks_and_blocks_columns() {
         note: "敏感列".into(),
     });
     proxy.save_policy(policy).expect("保存策略");
-    let addr = serve(Arc::clone(&proxy));
-    let client = DbClient::new(format!("http://{addr}"), "demo", Some("tk-test-123456"));
-    client.login().expect("登录");
 
     let set = client
         .query_rowset("SELECT Id, Name FROM t", None)

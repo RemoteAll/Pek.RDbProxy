@@ -18,18 +18,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
-    /// 学习模式：全部返回，未登记字段写审计（默认）
+    /// 学习模式：全部返回，未登记字段写审计（需显式开启）
     Audit,
-    /// 强制模式：未登记/拒绝的列**不返回**；掩码列保留但值替换为 `***`
+    /// 强制模式（**默认**）：未登记/拒绝的列不返回；掩码列保留但值替换为 `***`
     Enforce,
 }
 
 impl Mode {
-    /// 解析（未知值按 `Audit`）。
+    /// 解析（未知值按 `Enforce`，宁严勿松）。
     pub fn parse(text: &str) -> Self {
         match text.trim().to_ascii_lowercase().as_str() {
-            "enforce" => Self::Enforce,
-            _ => Self::Audit,
+            "audit" => Self::Audit,
+            _ => Self::Enforce,
         }
     }
 
@@ -100,13 +100,14 @@ pub struct Policy {
 }
 
 fn default_mode() -> Mode {
-    Mode::Audit
+    // 安全默认：**未登记列不放行**（白名单）。需要观察期时显式切到 `audit`。
+    Mode::Enforce
 }
 
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            mode: Mode::Audit,
+            mode: Mode::Enforce,
             rules: Vec::new(),
         }
     }
@@ -249,9 +250,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn audit_mode_allows_unknown_and_flags_it() {
+    fn default_mode_is_enforce_and_denies_unknown() {
         let policy = Policy::default();
-        assert_eq!(policy.mode, Mode::Audit);
+        assert_eq!(policy.mode, Mode::Enforce, "默认应为强制：未登记列不放行");
+        assert_eq!(policy.decide("demo", "name"), (Action::Deny, false));
+        assert_eq!(Mode::parse("whatever"), Mode::Enforce, "未知模式按宁严处理");
+        assert_eq!(Mode::parse("audit"), Mode::Audit);
+    }
+
+    #[test]
+    fn audit_mode_allows_unknown_and_flags_it() {
+        let policy = Policy {
+            mode: Mode::Audit,
+            rules: Vec::new(),
+        };
         assert_eq!(policy.decide("demo", "name"), (Action::Allow, false));
     }
 

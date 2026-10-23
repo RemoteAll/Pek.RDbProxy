@@ -585,7 +585,9 @@ function renderFields() {
     <div class="form-desc">
       按 <b>数据源 + 列名</b> 管控 <span class="font-mono">/Db/Query</span> 返回的列：
       <b>拒绝</b> 的列任何情况下都不返回（连 <span class="font-mono">SELECT *</span> 也拿不到，结果集里直接没有这一列）；
-      未登记字段在 <b>学习</b> 模式只记审计、在 <b>强制</b> 模式不返回。
+      <b>掩码</b> 保留列、值变 <span class="font-mono">***</span>。
+      <b>默认强制（enforce）：未登记列不放行</b>；需要先观察时切到学习模式（只记审计）。
+      尚未登记任何规则时不拦截（等于未启用）。
     </div>
     <div class="flex-between" style="margin:14px 0">
       <span class="badge ${enforce ? 'badge-red' : 'badge-gray'}">当前模式：${enforce ? '强制 enforce（未登记列不返回）' : '学习 audit（只记录）'}</span>
@@ -595,7 +597,7 @@ function renderFields() {
     </div>`;
 
   if (!rules.length) {
-    html += `<div class="empty-state"><div class="empty-icon">🛡</div><div>还没有规则 —— 点「+ 新增规则」把不该返回的列登记为<b>拒绝</b></div></div>`;
+    html += `<div class="empty-state"><div class="empty-icon">🛡</div><div>还没有规则 —— 未登记任何规则时<b>不拦截</b>；登记后，未登记的列默认<b>不放行</b>（强制模式）</div></div>`;
   } else {
     html += `<table class="svc-table">
       <thead><tr><th>数据源</th><th>列名</th><th>动作</th><th>备注</th><th style="width:150px">操作</th></tr></thead><tbody>`;
