@@ -387,7 +387,7 @@ async function editSource(name) {
       <label>连接串（Pek.RCode 格式，支持 enc:v1: 加密值）</label>
       <textarea id="f-conn" rows="6" spellcheck="false" autocomplete="off"
         placeholder="Server=127.0.0.1;Port=3306;Database=demo;Uid=root;Pwd=xxx;Provider=MySql">${esc(current || (s ? '' : DB_TEMPLATES.sqlite))}</textarea>
-      <div class="form-desc">${s ? '当前：' + esc(s.connection) + '<br>（完整值已回填到上方输入框，可直接修改；清空则保持原值）' : '选好类型后模板会自动填入，按实际情况改地址与账号密码'}</div>
+      <div class="form-desc">${s ? '已回填当前连接串（真实值，可直接修改）；清空则保持原值' : '选好类型后模板会自动填入，按实际情况改地址与账号密码'}</div>
     </div>
     <div class="form-group">
       <label>令牌（项目侧 Password=）</label>
