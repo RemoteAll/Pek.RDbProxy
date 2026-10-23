@@ -764,7 +764,7 @@ function renderUsers() {
       </span>
     </h2>
     <div class="form-desc">
-      内置管理员来自 <span class="font-mono">Config/Proxy.toml</span>（用户名/密码在「⚙ 设置」里改，恒有全部权限、不可删除）；
+      内置管理员来自 <span class="font-mono">Config/Proxy.toml</span>（在下方 <span class="font-mono">admin</span> 那一行点「编辑」改用户名/密码；恒有全部权限、不可删除）；
       下表用户存放在 <span class="font-mono">Data/admin.db</span>，按勾选的页签授权；密码只要求非空（不强制复杂度）。
     </div>
     <table class="svc-table" style="margin-top:12px">
@@ -780,7 +780,7 @@ function renderUsers() {
       <td>${u.enabled ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-red">停用</span>'}</td>
       <td class="text-muted">${esc(u.remark)}</td>
       <td>${u.builtin
-        ? '<button class="btn btn-ghost btn-sm" onclick="switchPanel(\'settings\')">去设置改密</button>'
+        ? `<button class="btn btn-ghost btn-sm" onclick="editUser('${esc(u.userName)}')">编辑</button>`
         : `<div class="svc-actions">
              <button class="btn btn-ghost btn-sm" onclick="editUser('${esc(u.userName)}')">编辑</button>
              <button class="btn btn-ghost btn-sm text-red" onclick="removeUser('${esc(u.userName)}')">删除</button>
@@ -792,6 +792,27 @@ function renderUsers() {
 }
 
 function editUser(name) {
+  // 内置管理员：只改用户名/密码（权限恒全、不可删除；凭据在 Config/Proxy.toml）
+  if (name && usersData && usersData.builtinAdmin && name === usersData.builtinAdmin.userName) {
+    const cur = usersData.builtinAdmin;
+    showModal('内置管理员（配置文件）', `
+      <label>用户名</label>
+      <input type="text" id="u-name" value="${esc(cur.userName)}" style="margin-bottom:10px">
+      <label>新密码（留空 = 不改；不强制复杂度）</label>
+      <input type="text" id="u-pass" placeholder="留空表示保持现有密码" style="margin-bottom:10px">
+      <div class="form-desc">存在 <span class="font-mono">Config/Proxy.toml</span>，恒有全部权限、不可删除。</div>
+    `, '保存', async () => {
+      const body = { builtin: true, name: $('u-name').value.trim(), password: $('u-pass').value };
+      if (!body.name) { toast('用户名不能为空', 'error'); return; }
+      try {
+        unwrap(await api('/api/user', { method: 'POST', body: JSON.stringify(body) }));
+        toast('已保存', 'success');
+        await loadMe();
+        await loadUsers(true);
+      } catch (e) { toast(e.message, 'error'); }
+    });
+    return;
+  }
   const perms = (usersData && usersData.permissions) || [];
   const cur = name ? ((usersData && usersData.users) || []).find(u => u.userName === name) : null;
   if (name && !cur) { toast('用户不存在（先刷新）', 'error'); return; }
@@ -939,14 +960,9 @@ function loadSettings() {
         <td>对齐 Pek.RAgent：None / LocalOnly / Full</td>
       </tr>
       <tr>
-        <td>面板用户名</td>
-        <td><input type="text" id="s-user" value="${esc(s.webUserName)}" style="width:200px"></td>
-        <td>保存后立即生效</td>
-      </tr>
-      <tr>
-        <td>面板新密码</td>
-        <td><input type="password" id="s-pass" placeholder="（留空 = 不改）" style="width:200px"></td>
-          <td>留空表示保持现有密码不变（不强制复杂度，建议使用不易猜的密码）</td>
+        <td>内置管理员</td>
+        <td colspan="2">用户名/密码在「👥 用户」页的 <span class="font-mono">${esc(s.webUserName)}</span> 那一行点「编辑」修改
+          （存在 <span class="font-mono">Config/Proxy.toml</span>，恒有全部权限、不可删除）。</td>
       </tr>
       <tr>
         <td></td>
@@ -983,8 +999,6 @@ async function saveSettings() {
     allowRemote: $('s-remote').checked,
     panelLocalOnly: $('s-panel-local').checked,
     authLevel: $('s-level').value,
-    userName: ($('s-user').value || '').trim(),
-    password: ($('s-pass').value || '').trim(),
   };
   try {
     const r = unwrap(await api('/api/server', { method: 'POST', body: JSON.stringify(payload) }));

@@ -602,7 +602,7 @@ fn list_users(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
                 "permissions": keys,
                 "permissionNames": names,
                 "enabled": true,
-                "remark": "内置管理员（Config/Proxy.toml 的 WebUserName / WebPassword，在「设置」里改）",
+                "remark": "内置管理员（Config/Proxy.toml 的 WebUserName / WebPassword；在用户页点「编辑」修改）",
             }),
         );
     }
@@ -610,11 +610,33 @@ fn list_users(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
 }
 
 /// `POST /api/user`：保存用户（新建/更新；`originalName` 非空且与 `name` 不同表示改名）。
+///
+/// `builtin: true` 时改的是**内置管理员**（`Config/Proxy.toml` 的 `WebUserName` / `WebPasswordHash`）。
 fn save_user(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
     let body = json_body(ctx);
     let name = text(&body, "name");
     if name.is_empty() {
         return fail(400, "用户名不能为空");
+    }
+    // 内置管理员：只改用户名/密码，走服务端配置（恒有全部权限、不可删除）
+    if body.get("builtin").and_then(Value::as_bool).unwrap_or(false) {
+        let password = text(&body, "password");
+        let patch = crate::proxy::ServerPatch {
+            user_name: Some(name.clone()),
+            password: if password.trim().is_empty() {
+                None
+            } else {
+                Some(password)
+            },
+            ..Default::default()
+        };
+        return match proxy.update_server(patch) {
+            Ok(server) => {
+                dhrust::info!("内置管理员凭据已更新：{}", server.web_user_name);
+                ok(json!({ "ok": true, "userName": server.web_user_name }))
+            }
+            Err(e) => fail(400, &e),
+        };
     }
     let original = text(&body, "originalName");
     let password = text(&body, "password");
