@@ -15,7 +15,7 @@ use dhrust::net::router::{Ctx, Next, Router, route};
 use dhrust::net::static_files::StaticFiles;
 use serde_json::{Map, Value, json};
 
-use crate::config::DatabaseSection;
+use crate::config::{DatabaseSection, DriverStoreSection};
 use crate::proxy::Proxy;
 
 /// 面板静态资源（与 Pek.RAgent 同一套 `web/` 结构：骨架 HTML + app.css + app.js）。
@@ -91,6 +91,10 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     router.map_post("/api/readonly", guard(Arc::clone(&proxy), "sources", set_read_only));
     router.map_post("/api/server", guard(Arc::clone(&proxy), "settings", save_server));
     router.map_post("/api/upgrade", guard(Arc::clone(&proxy), "settings", upgrade));
+    // 驱动组件（内置驱动之外的库类型按需下载；也能让驱动单独升级，不必重编本程序）
+    router.map_get("/api/drivers", guard(Arc::clone(&proxy), "settings", drivers_report));
+    router.map_post("/api/drivers/install", guard(Arc::clone(&proxy), "settings", driver_install));
+    router.map_post("/api/drivers/config", guard(Arc::clone(&proxy), "settings", save_driver_store));
     router.map_get("/api/fields", guard(Arc::clone(&proxy), "fields", list_fields));
     router.map_post("/api/fields", guard(Arc::clone(&proxy), "fields", save_field));
     router.map_post("/api/fields/delete", guard(Arc::clone(&proxy), "fields", delete_field));
@@ -740,6 +744,119 @@ fn save_server(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
             "rebound": format!("{}:{}", server.host, server.port),
             "restartRequired": false,
             "firewallNote": proxy.firewall_note(),
+        })),
+        Err(e) => fail(400, &e),
+    }
+}
+
+/// `GET /api/drivers`：驱动组件总览（组件源目录 ∪ 本机缓存 + 运行中宿主）。
+fn drivers_report(proxy: &Proxy, _ctx: &Ctx) -> HttpResponse {
+    let report = crate::drivers::report();
+    let items: Vec<Value> = report
+        .items
+        .iter()
+        .map(|row| {
+            json!({
+                "id": row.id,
+                "name": row.name,
+                "builtin": row.builtin,
+                "local": row.local,
+                "latest": row.latest,
+                "running": row.running,
+                "upgradable": row.upgradable(),
+            })
+        })
+        .collect();
+    let hosts: Vec<Value> = report
+        .hosts
+        .iter()
+        .map(|host| {
+            json!({
+                "component": host.component,
+                "version": host.version,
+                "addr": host.addr,
+                "pid": host.pid,
+                "idleSecs": host.idle_secs,
+            })
+        })
+        .collect();
+    let section = proxy.driver_store();
+    ok(json!({
+        "store": report.store,
+        "offline": report.offline,
+        "online": report.online,
+        "error": report.error,
+        "componentFirst": report.component_first,
+        "cacheDir": report.cache_dir,
+        "target": report.target,
+        "items": items,
+        "hosts": hosts,
+        "builtinProviders": crate::drivers::BUILTIN_PROVIDERS,
+        "config": {
+            "url": section.url,
+            "pubKey": section.pub_key,
+            "caFile": section.ca_file,
+            "componentFirst": section.component_first,
+            "cacheDir": section.cache_dir,
+        },
+    }))
+}
+
+/// `POST /api/drivers/install`：下载/升级单个驱动组件（`{id}`）。
+///
+/// 只落地到本机缓存、不拉起宿主；已有数据源在用旧版本时需重开或重启服务才切换。
+fn driver_install(_proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    let body = json_body(ctx);
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if id.is_empty() {
+        return fail(400, "缺少组件 id（如 dbserver-oracle）");
+    }
+    match crate::drivers::install(&id) {
+        Ok(version) => ok(json!({
+            "id": id,
+            "version": version,
+            "cacheDir": crate::drivers::cache_dir(),
+            "note": "已安装到本机缓存；数据源重开（或重启服务）后使用新版本",
+        })),
+        Err(e) => fail(400, &e),
+    }
+}
+
+/// `POST /api/drivers/config`：保存 `[DriverStore]`（组件源/公钥/CA/组件优先/缓存目录）。
+///
+/// 保存后立即重建驱动管理器并重开全部数据源（旧驱动宿主进程会被停掉）。
+fn save_driver_store(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    let body = json_body(ctx);
+    let current = proxy.driver_store();
+    let field = |key: &str, fallback: &str| -> String {
+        body.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or(fallback)
+            .to_string()
+    };
+    let section = DriverStoreSection {
+        url: field("url", &current.url),
+        pub_key: field("pubKey", &current.pub_key),
+        ca_file: field("caFile", &current.ca_file),
+        component_first: body
+            .get("componentFirst")
+            .and_then(Value::as_bool)
+            .unwrap_or(current.component_first),
+        cache_dir: field("cacheDir", &current.cache_dir),
+    };
+    match proxy.update_driver_store(section) {
+        Ok(saved) => ok(json!({
+            "url": saved.url,
+            "pubKey": saved.pub_key,
+            "caFile": saved.ca_file,
+            "componentFirst": saved.component_first,
+            "cacheDir": saved.cache_dir,
         })),
         Err(e) => fail(400, &e),
     }

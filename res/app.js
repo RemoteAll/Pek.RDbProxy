@@ -1016,6 +1016,16 @@ function loadSettings() {
   </div>
 
   <div class="card glass-card">
+    <h2>🧩 驱动组件</h2>
+    <div class="form-desc" style="margin-bottom:10px">
+      本程序<b>内置</b> SQLite 与 <span class="font-mono" id="drv-builtin">—</span>；其余库类型（Oracle / 达梦 / MongoDB / HANA / Firebird / ODBC …）
+      首次打开数据源时自动从组件源下载 <span class="font-mono">dbserver-&lt;类型&gt;</span> 驱动包并拉起宿主进程，
+      <b>驱动组件升级不必重编/重发本程序</b>。
+    </div>
+    <div id="drv-body"><div class="form-desc">正在读取组件源…</div></div>
+  </div>
+
+  <div class="card glass-card">
     <h2>ℹ 运行信息</h2>
     <table class="info-table">
       <tr><td>程序</td><td>Pek.RDbProxy v${esc(status.version || '0.1.0')}</td></tr>
@@ -1026,6 +1036,132 @@ function loadSettings() {
     </table>
   </div>`;
   $('panel-settings').innerHTML = html;
+  loadDrivers();
+}
+
+/* ── 驱动组件（按需下载） ───────────────────────────── */
+
+let driversData = null;
+
+async function loadDrivers(silent) {
+  const box = $('drv-body');
+  if (!box) return;
+  if (!silent) box.innerHTML = '<div class="form-desc">正在读取组件源…</div>';
+  try {
+    driversData = unwrap(await api('/api/drivers'));
+    const builtin = $('drv-builtin');
+    if (builtin) builtin.textContent = (driversData.builtinProviders || []).join(' / ') || '—';
+    renderDrivers();
+  } catch (e) {
+    box.innerHTML = `<div class="err">读取驱动组件失败：${esc(e.message)}</div>`;
+  }
+}
+
+function renderDrivers() {
+  const box = $('drv-body');
+  const d = driversData;
+  if (!box || !d) return;
+  const c = d.config || {};
+  const stateText = d.offline
+    ? '已关闭联网（仅本机缓存）'
+    : (d.online ? '组件源可达' : '组件源不可达');
+  const stateCls = d.offline ? 'off' : (d.online ? 'on' : 'bad');
+  const rows = (d.items || []).map(it => {
+    const badge = it.builtin ? '<span class="tag tag-ok">内置</span>' : '<span class="tag">组件</span>';
+    const local = it.local ? esc(it.local) : '<span class="muted">未安装</span>';
+    const latest = it.latest ? esc(it.latest) : '<span class="muted">—</span>';
+    const op = it.upgradable
+      ? `<button class="btn btn-primary btn-sm" onclick="installDriver('${esc(it.id)}')">${it.local ? '升级' : '安装'}</button>`
+      : (it.local ? '<span class="muted">已就绪</span>' : '<span class="muted">—</span>');
+    return `<tr>
+      <td class="font-mono">${esc(it.id)}</td>
+      <td>${esc(it.name)}</td>
+      <td>${badge}</td>
+      <td>${local}</td>
+      <td>${latest}</td>
+      <td>${it.running || 0}</td>
+      <td>${op}</td>
+    </tr>`;
+  }).join('');
+  const hosts = (d.hosts || []).map(h =>
+    `<li><span class="font-mono">${esc(h.component)} ${esc(h.version)}</span> · ${esc(h.addr)} · pid ${esc(h.pid)}</li>`
+  ).join('');
+
+  box.innerHTML = `
+  <div class="form-desc" style="margin-bottom:8px">
+    组件源：<span class="font-mono">${esc(d.store || '—')}</span>
+    <span class="drv-state ${stateCls}">${stateText}</span>
+    · 缓存：<span class="font-mono">${esc(d.cacheDir || '—')}</span>
+    · 平台：<span class="font-mono">${esc(d.target || '—')}</span>
+    · 组件优先：<b>${d.componentFirst ? '是' : '否'}</b>
+    <button class="btn btn-ghost btn-sm" onclick="loadDrivers()">刷新</button>
+  </div>
+  ${d.error ? `<div class="err" style="margin-bottom:8px">组件源访问失败：${esc(d.error)}</div>` : ''}
+  ${rows ? `<table class="config-table" style="margin-bottom:10px">
+    <tr><th>组件</th><th>名称</th><th>类型</th><th>本地版本</th><th>最新版本</th><th>运行中</th><th>操作</th></tr>
+    ${rows}
+  </table>` : '<div class="form-desc" style="margin-bottom:10px">没有可显示的组件（组件源不可达且本机无缓存）。</div>'}
+  ${hosts ? `<div class="form-desc" style="margin-bottom:10px">运行中的驱动宿主：<ul style="margin:6px 0 0 18px">${hosts}</ul></div>` : ''}
+  <table class="config-table">
+    <tr>
+      <td>组件源地址</td>
+      <td><input id="drv-url" value="${esc(c.url || '')}" placeholder="留空 = 平台默认地址；off = 仅本机缓存" style="width:100%;max-width:420px"></td>
+      <td>驱动包来源（Pek.RPanlServer 组件库）；离线环境填 off 并把驱动包解压到缓存目录</td>
+    </tr>
+    <tr>
+      <td>公钥（Ed25519）</td>
+      <td><input id="drv-pubkey" value="${esc(c.pubKey || '')}" placeholder="留空 = 不验签" style="width:100%;max-width:420px"></td>
+      <td>填写后强制验签，并允许内网 http 组件源</td>
+    </tr>
+    <tr>
+      <td>组件源根证书</td>
+      <td><input id="drv-ca" value="${esc(c.caFile || '')}" placeholder="留空 = 用公共根；自签/内网 CA 填 PEM 路径" style="width:100%;max-width:420px"></td>
+      <td>相对路径按程序基目录解析</td>
+    </tr>
+    <tr>
+      <td>缓存目录</td>
+      <td><input id="drv-cache" value="${esc(c.cacheDir || '')}" placeholder="留空 = Data/Drivers" style="width:100%;max-width:420px"></td>
+      <td>驱动包解压后的存放位置</td>
+    </tr>
+    <tr>
+      <td>组件优先</td>
+      <td>
+        <label class="toggle-wrap">
+          <span class="toggle">
+            <input type="checkbox" id="drv-first" ${c.componentFirst ? 'checked' : ''}><span class="track"><span class="thumb"></span></span>
+          </span>
+        </label>
+      </td>
+      <td>开启后连内置驱动也强制走组件（驱动完全随组件源单独升级，首次使用会联网下载）；关闭时内置优先，已缓存的组件仍会优先使用</td>
+    </tr>
+    <tr>
+      <td></td>
+      <td colspan="2"><button class="btn btn-primary btn-sm" onclick="saveDriverConfig()">保存并重载驱动</button></td>
+    </tr>
+  </table>`;
+}
+
+async function installDriver(id) {
+  try {
+    const r = unwrap(await api('/api/drivers/install', { method: 'POST', body: JSON.stringify({ id }) }));
+    toast(`${id} 已安装：${r.version}（重开数据源或重启服务后生效）`, 'success');
+    loadDrivers(true);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function saveDriverConfig() {
+  const payload = {
+    url: $('drv-url').value.trim(),
+    pubKey: $('drv-pubkey').value.trim(),
+    caFile: $('drv-ca').value.trim(),
+    cacheDir: $('drv-cache').value.trim(),
+    componentFirst: $('drv-first').checked,
+  };
+  try {
+    unwrap(await api('/api/drivers/config', { method: 'POST', body: JSON.stringify(payload) }));
+    toast('驱动组件配置已保存，数据源已按新配置重开', 'success');
+    loadDrivers(true);
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 /* 开关变化：更新文字并提示需要保存（避免"勾了没反应"的误解） */

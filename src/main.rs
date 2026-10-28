@@ -191,6 +191,11 @@ fn status_command(base: &std::path::Path) -> i32 {
             "已设置"
         }
     );
+    // 驱动组件（按需下载）：先初始化，`Proxy::open` 打开数据源时才可能用到它
+    if let Err(e) = pek_rdbproxy::drivers::init(base, &cfg.driver_store) {
+        dhrust::warn!("驱动组件源初始化失败（改用内置驱动继续）：{e}");
+        eprintln!("驱动组件源初始化失败（改用内置驱动继续）：{e}");
+    }
     let proxy = match Proxy::open(base, &cfg) {
         Ok(proxy) => proxy,
         Err(e) => {
@@ -214,6 +219,22 @@ fn status_command(base: &std::path::Path) -> i32 {
         );
         println!("       {}", source.connection);
     }
+    let driver_store = proxy.driver_store();
+    println!(
+        "驱动组件：组件源={}（内置 {}；组件优先={}；缓存 {}）",
+        if driver_store.url.trim().is_empty() {
+            "默认".to_string()
+        } else {
+            driver_store.url.clone()
+        },
+        pek_rdbproxy::drivers::BUILTIN_PROVIDERS.join(", "),
+        driver_store.component_first,
+        if driver_store.cache_dir.trim().is_empty() {
+            "Data/Drivers".to_string()
+        } else {
+            driver_store.cache_dir.clone()
+        }
+    );
     let update_dir = base.join("Update");
     if update_dir.is_dir() {
         let pending = std::fs::read_dir(&update_dir)
@@ -411,6 +432,10 @@ fn run_command(base: std::path::PathBuf) -> i32 {
             return 1;
         }
     };
+    // 驱动组件（按需下载）：必须在打开数据源之前初始化（未内置的库类型靠它落地驱动包）
+    if let Err(e) = pek_rdbproxy::drivers::init(&base, &cfg.driver_store) {
+        dhrust::warn!("驱动组件源初始化失败（改用内置驱动继续）：{e}");
+    }
     let proxy = match Proxy::open(&base, &cfg) {
         Ok(proxy) => Arc::new(proxy),
         Err(e) => {

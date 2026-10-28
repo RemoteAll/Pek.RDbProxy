@@ -19,6 +19,7 @@
 | 密码存储 | `dhrust::sign::salted_sha256_hex` + `dhrust::secret` | 不明文落盘 |
 | WAF | `pek-rwaf`（`admin_api` 预设） | 所有带网页的项目必须接 |
 | 数据库 | `pek-rcode`（`database` + `driver-*`） | — |
+| 驱动按需下载 | `pek_rcode::driver_pack`（`driver-pack` 特性 + `[DriverStore]`） | 未内置的库类型运行时从组件源下载 dbserver 驱动包；**驱动升级不必重编本仓** |
 | 服务化 | `dhrust::service::ServiceManager` | Windows SCM / systemd |
 | 星尘托管 | `dhrust::staragent::register` | Mode=11 影子模式 |
 | 自升级 | `Update/` 目录热检测 + 原子替换（参考 `Pek.RAgent`） | 覆盖即升级 |

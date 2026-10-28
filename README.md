@@ -33,6 +33,16 @@ DbClient ──http──► Pek.RDbProxy :5599 ──驱动──► MySQL / PG
 | 星尘托管注册 | `dhrust::staragent` |
 | 配置读写（保留注释） | `dhrust::config::toml` |
 | 数据库访问与连接串解析 | `pek-rcode` |
+| 驱动组件按需下载 | `pek_rcode::driver_pack`（`[DriverStore]` 配置组件源） |
+
+## 驱动组件（内置 + 按需下载）
+
+- **内置**：SQLite，以及 `Cargo.toml` 里的 `driver-mysql` / `driver-postgresql` / `driver-sqlserver`。
+- **其余库类型**（Oracle / 达梦 / MongoDB / HANA / Firebird / ODBC / ClickHouse …）首次打开数据源时，
+  自动从组件源（默认 `https://p.sc8.fun`，可配内网 Pek.RPanlServer）下载 `dbserver-<类型>` 驱动包，
+  解压到 `Data/Drivers/` 并拉起宿主进程，再以 `provider=network` 转接。
+- **驱动组件升级不必重编/重发本程序**：面板「设置 → 驱动组件」可查看清单/安装/升级；离线环境把 `[DriverStore] Url` 设为 `off` 并预置驱动包即可。
+- 配置：`Config/Proxy.toml` 的 `[DriverStore]`（`Url` / `PubKey` / `CaFile` / `ComponentFirst` / `CacheDir`）。
 
 ## 快速开始
 

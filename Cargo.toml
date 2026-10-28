@@ -19,6 +19,9 @@ dhrust = { path = "../DH.RustBase", default-features = false, features = [
 # ORM + 驱动（默认只带常用驱动，其余按需在下面加 driver-* 特性）
 pek-rcode = { path = "../Pek.RCode", default-features = false, features = [
     "database",
+    # 驱动组件按需分发：未内置的库类型运行时从组件源下载 dbserver 驱动包
+    # （已下载的组件优先于内置驱动，驱动升级不必重编本仓）
+    "driver-pack",
     "driver-mysql",
     "driver-postgresql",
     "driver-sqlserver",

@@ -18,6 +18,41 @@ pub struct ProxyConfig {
     pub server: ServerSection,
     /// 数据源列表
     pub databases: Vec<DatabaseSection>,
+    /// 驱动组件源（未内置驱动的库类型运行时按需下载）
+    pub driver_store: DriverStoreSection,
+}
+
+/// `[DriverStore]` 段：驱动组件源（Pek.RCode `driver-pack`）。
+///
+/// 本程序**只内置常用驱动**（SQLite 永远内置；另见 `Cargo.toml` 的 `driver-*` 特性），
+/// 其余库类型（Oracle / 达梦 / MongoDB / HANA / Firebird / ODBC …）首次使用某个数据源时
+/// 自动从组件源下载对应 `dbserver-<类型>` 驱动包到本地缓存，再拉起宿主进程转接——
+/// 因此**驱动组件升级不需要重新编译/重新发布本程序**。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct DriverStoreSection {
+    /// 组件源地址（空 = 平台默认地址；`off` = 关闭联网，仅用本机缓存）
+    pub url: String,
+    /// 组件源 Ed25519 公钥（hex / SPKI；非空则强制验签，并允许内网 http 组件源）
+    pub pub_key: String,
+    /// 组件源 https 自定义根证书（PEM 文件；相对路径按程序基目录）
+    pub ca_file: String,
+    /// 组件优先：`true` = 本机已下载的驱动组件优先于内置驱动（驱动可单独升级）
+    pub component_first: bool,
+    /// 驱动缓存目录（空 = `Data/Drivers`）
+    pub cache_dir: String,
+}
+
+impl Default for DriverStoreSection {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            pub_key: String::new(),
+            ca_file: String::new(),
+            component_first: true,
+            cache_dir: String::new(),
+        }
+    }
 }
 
 /// `[Server]` 段。

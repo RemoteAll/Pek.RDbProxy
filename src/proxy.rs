@@ -21,7 +21,7 @@ use pek_rcode::dal::Dal;
 use pek_rcode::db_service::DbService;
 use serde_json::{Value, json};
 
-use crate::config::{self, DatabaseSection, ProxyConfig, ServerSection, mask_connection};
+use crate::config::{self, DatabaseSection, DriverStoreSection, ProxyConfig, ServerSection, mask_connection};
 
 /// 审计缓冲上限（内存环形；同时写日志文件）。
 pub const AUDIT_CAPACITY: usize = 500;
@@ -188,6 +188,8 @@ pub struct Proxy {
     firewall_note: RwLock<String>,
     /// 字段级安全策略（「表管理」）
     policy: RwLock<crate::policy::Policy>,
+    /// 驱动组件源配置（面板「设置 → 驱动组件」可改，改完重建管理器）
+    driver_store: RwLock<DriverStoreSection>,
 }
 
 /// 监听地址热重绑钩子：入参为新的服务端配置，返回实际监听地址。
@@ -213,6 +215,7 @@ impl Proxy {
             firewall_note: RwLock::new(String::new()),
             policy: RwLock::new(crate::policy::load(base)),
             unknown_fields: crate::policy::UnknownFields::default(),
+            driver_store: RwLock::new(config.driver_store.clone()),
         };
         // 启动即把仍是明文的连接串加密写回（存盘不再有明文密码）
         match proxy.migrate_encrypt() {
@@ -262,6 +265,84 @@ impl Proxy {
     /// 服务端设置快照。
     pub fn server_config(&self) -> ServerSection {
         self.server.read().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// 驱动组件源配置（面板「设置 → 驱动组件」展示/保存用）。
+    pub fn driver_store(&self) -> DriverStoreSection {
+        self.driver_store
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_default()
+    }
+
+    /// 保存驱动组件源配置：重建管理器 → 重开全部数据源 → 写回配置文件。
+    ///
+    /// 为什么必须重开数据源：组件源变更会停掉旧驱动宿主进程，已有连接同时失效。
+    pub fn update_driver_store(
+        &self,
+        section: DriverStoreSection,
+    ) -> Result<DriverStoreSection, String> {
+        crate::drivers::init(&self.base, &section)?;
+        {
+            let mut guard = self
+                .driver_store
+                .write()
+                .map_err(|_| "状态锁异常".to_string())?;
+            *guard = section.clone();
+        }
+        let reopened = self.reopen_sources();
+        self.save_config()?;
+        reopened?;
+        dhrust::info!(
+            "驱动组件源已保存：组件源={}\u{ff1b}缓存={}\u{ff1b}组件优先={}",
+            {
+                let store = crate::drivers::store();
+                if store.trim().is_empty() {
+                    "off（仅本机缓存）".to_string()
+                } else {
+                    store
+                }
+            },
+            crate::drivers::cache_dir(),
+            section.component_first
+        );
+        Ok(section)
+    }
+
+    /// 按当前配置重新打开全部数据源（驱动宿主重启 / 组件升级后调用）。
+    pub fn reopen_sources(&self) -> Result<(), String> {
+        let sections: Vec<DatabaseSection> = {
+            let registry = self.registry.read().map_err(|_| "状态锁异常".to_string())?;
+            registry.sources.iter().map(|s| s.section.clone()).collect()
+        };
+        let mut sources = Vec::with_capacity(sections.len());
+        for section in &sections {
+            let opened = open_source(&self.base, section)?;
+            let old = self
+                .registry
+                .read()
+                .ok()
+                .and_then(|r| r.sources.iter().find(|s| s.name.eq_ignore_ascii_case(&opened.name)).cloned());
+            if let Some(old) = old {
+                // 保留历史统计，重开后仍能看出之前的表现
+                opened
+                    .stat
+                    .requests
+                    .store(old.stat.requests.load(Ordering::Relaxed), Ordering::Relaxed);
+                opened
+                    .stat
+                    .failures
+                    .store(old.stat.failures.load(Ordering::Relaxed), Ordering::Relaxed);
+                opened
+                    .stat
+                    .total_us
+                    .store(old.stat.total_us.load(Ordering::Relaxed), Ordering::Relaxed);
+            }
+            sources.push(Arc::new(opened));
+        }
+        let registry = Registry::rebuild(sources)?;
+        *self.registry.write().map_err(|_| "状态锁异常".to_string())? = registry;
+        Ok(())
     }
 
     /// 数据源数量。
@@ -610,7 +691,16 @@ impl Proxy {
                 section
             })
             .collect::<Vec<_>>();
-        config::save(&self.base, &ProxyConfig { server, databases }).map(|_| ())
+        let driver_store = self.driver_store();
+        config::save(
+            &self.base,
+            &ProxyConfig {
+                server,
+                databases,
+                driver_store,
+            },
+        )
+        .map(|_| ())
     }
 
     /// 处理 `/Db/*` 协议请求（鉴权走各数据源令牌）。
@@ -934,12 +1024,16 @@ fn open_source(base: &Path, section: &DatabaseSection) -> Result<DataSource, Str
     // SQLite 相对路径按程序基目录绝对化并建目录（否则会相对进程 CWD，`Data/x.db` 打不开）
     let raw = resolve_connection(base, &section.connection)?;
     let connection = pek_rcode::database::resolve_connection(base, &raw)?;
-    let (dal, open_error, kind) = match Dal::open(&connection) {
+    // 驱动组件按需分发：SQLite 等内嵌驱动与 network 连接串原样返回；未内置的类型
+    // 从组件源下载/复用驱动包并拉起 dbserver 宿主，返回 provider=network 连接串
+    let opened = crate::drivers::prepare(&connection)
+        .and_then(|prepared| Dal::open(&prepared).map_err(|e| e.to_string()));
+    let (dal, open_error, kind) = match opened {
         Ok(dal) => {
             let kind = dal.kind().name().to_string();
             (Some(Arc::new(dal)), String::new(), kind)
         }
-        Err(e) => (None, e.to_string(), String::new()),
+        Err(e) => (None, e, String::new()),
     };
     Ok(DataSource {
         section: section.clone(),

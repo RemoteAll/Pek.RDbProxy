@@ -56,6 +56,8 @@ fn build_proxy(base: &Path, read_only: bool, password_hash: &str) -> Arc<Proxy> 
             read_only,
             description: "e2e".into(),
         }],
+        // 测试只用 SQLite（内嵌驱动，永不走组件源）
+        driver_store: Default::default(),
     };
     Arc::new(Proxy::open(base, &config).expect("代理应可构建"))
 }

@@ -30,6 +30,23 @@ WebAuthLevel = "LocalOnly"
 # JWT 密钥（首次签发令牌时自动生成，勿手改）
 JwtSecret = ""
 
+# ── 驱动组件源（DriverStore）────────────────────────────────────────────
+# 本程序内置 SQLite 与 Cargo.toml 里 driver-* 列出的驱动；其余库类型（Oracle / 达梦 /
+# MongoDB / HANA / Firebird / ODBC …）首次打开数据源时自动从组件源下载 dbserver 驱动包。
+# 好处：**驱动组件升级不需要重编/重发本程序**（面板「设置 → 驱动组件」可检测/下载/升级）。
+[DriverStore]
+# 组件源地址；留空 = 平台默认地址；填 off = 关闭联网（只用本机缓存，离线环境用）
+Url = ""
+# 组件源 Ed25519 公钥（hex 或 SPKI）；非空强制验签，并允许内网 http 组件源
+PubKey = ""
+# 组件源为 https 自签/内网 CA 时指定根证书 PEM（相对路径按程序基目录）
+CaFile = ""
+# 组件优先：true = 连内置驱动也强制走组件（驱动可完全跟着组件源单独升级，首次使用会联网下载）
+#          false（默认）= 内置驱动优先；本机已缓存该组件时改用组件，未内置的类型仍按需下载
+ComponentFirst = false
+# 驱动缓存目录；留空 = Data/Drivers
+CacheDir = ""
+
 # ── 数据源（[[Databases]] 可重复；Name 唯一，忽略大小写）──────────────────────
 [[Databases]]
 # 项目侧连接串里的 Database=<Name>
