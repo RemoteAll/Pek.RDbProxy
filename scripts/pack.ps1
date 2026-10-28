@@ -1,7 +1,9 @@
 ﻿param(
     [ValidateSet('windows', 'linux', 'all')][string]$Targets = 'all',
     [switch]$NoBump,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    # Windows 包默认带上桌面工具（Tauri）；服务端部署不需要时可跳过
+    [switch]$WithoutTool
 )
 
 # Pek.RDbProxy 打包
@@ -58,6 +60,20 @@ try {
             Write-Host "构建 windows-x64（release）…" -ForegroundColor Yellow
             & cargo build --release --offline
             if ($LASTEXITCODE -ne 0) { throw 'Windows 构建失败' }
+
+            # 桌面工具（Tauri 2，desktop/ 是独立嵌套工作区）；构建失败不阻止代理本体出包
+            if (-not $WithoutTool) {
+                Write-Host "构建桌面工具（Tauri release，desktop/target）…" -ForegroundColor Yellow
+                Push-Location (Join-Path $root 'desktop')
+                try {
+                    & cargo build --release --offline -p pek-rdbproxy-tool
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Warning '桌面工具构建失败：本次包不含 pek-rdbproxy-tool.exe（用 -WithoutTool 可显式跳 过）'
+                    }
+                } finally {
+                    Pop-Location
+                }
+            }
         }
         $built += @{ Name = 'win-x64'; Path = (Join-Path $root 'target\release\pek-rdbproxy.exe') }
     }
@@ -110,6 +126,12 @@ try {
             if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
             New-Item -ItemType Directory -Path $stage | Out-Null
             Copy-Item $item.Path (Join-Path $stage 'pek-rdbproxy.exe')
+            # 桌面工具（构建过才带上；产物在 desktop/target，不在根 target）
+            $toolExe = Join-Path $root 'desktop\target\release\pek-rdbproxy-tool.exe'
+            if (Test-Path $toolExe) {
+                Copy-Item $toolExe (Join-Path $stage 'pek-rdbproxy-tool.exe')
+                Write-Host "  已包含桌面工具：pek-rdbproxy-tool.exe" -ForegroundColor DarkGray
+            }
             Copy-Item (Join-Path $root 'scripts\install.ps1') (Join-Path $stage 'install.ps1')
             Copy-Item (Join-Path $root 'README.md') (Join-Path $stage 'README.md') -ErrorAction SilentlyContinue
             $zip = Join-Path $dist "$stem.zip"

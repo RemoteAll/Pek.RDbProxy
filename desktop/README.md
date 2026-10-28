@@ -42,7 +42,7 @@ cargo tauri build
 ```
 
 > 本机 `G:` 盘空间紧张时，可把编译产物挪走：
-> `$env:CARGO_TARGET_DIR='D:\cargo-target\rdbproxy-desktop'`。
+> `$env:CARGO_TARGET_DIR=<别处目录>`（**只是临时应急**，不要写进仓库配置）。
 
 ## 约定 / 注意
 
