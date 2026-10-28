@@ -1,0 +1,18 @@
+[package]
+name = "pek-rdbproxy-tool"
+version = "0.1.0"
+edition = "2024"
+description = "Pek.RDbProxy 桌面工具（Tauri 版）：连接测试 / SQL 控制台 / 协议自检"
+authors = ["PeiKeSmart"]
+license = "MIT"
+rust-version = "1.85"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# 业务全在 core（可单测、可进 CI），本 crate 只做命令绑定
+pek-rdbproxy-tool-core = { path = "../core" }
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

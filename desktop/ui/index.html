@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pek.RDbProxy 连接控制台</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <span class="dot" id="conn-dot"></span>
+    <h1>Pek.RDbProxy 连接控制台</h1>
+    <span class="ver" id="app-ver">v—</span>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="console">SQL 控制台</button>
+    <button class="tab" data-tab="check">协议自检</button>
+    <button class="tab" data-tab="about">关于</button>
+  </nav>
+</header>
+
+<section class="conn">
+  <label for="conn">项目侧连接串</label>
+  <input id="conn" spellcheck="false"
+         placeholder="Server=http://127.0.0.1:5599;Database=&lt;数据源名&gt;;Password=&lt;令牌&gt;;provider=network">
+  <button class="btn primary" id="btn-login">连接测试</button>
+  <span class="state" id="conn-state">未连接</span>
+</section>
+
+<main>
+  <!-- ① SQL 控制台 -->
+  <section class="panel active" id="tab-console">
+    <div class="card">
+      <div class="card-head">
+        <h2>SQL</h2>
+        <div class="row">
+          <button class="btn" id="btn-query">查询</button>
+          <button class="btn" id="btn-execute">执行写语句</button>
+          <button class="btn" id="btn-tables">表结构</button>
+          <input id="count-table" class="mini" placeholder="表名">
+          <button class="btn" id="btn-count">记录数</button>
+        </div>
+      </div>
+      <textarea id="sql" spellcheck="false" placeholder="SELECT 1">SELECT 1</textarea>
+      <div class="hint">提示：数据源为「只读」时，写语句会被代理拒绝并给出 403 —— 这正是要验证的行为。</div>
+    </div>
+
+    <div class="card" id="result-card">
+      <div class="card-head">
+        <h2 id="result-title">结果</h2>
+        <span class="meta" id="result-meta"></span>
+      </div>
+      <div class="err hidden" id="result-error"></div>
+      <div class="note hidden" id="result-note"></div>
+      <div class="result-wrap" id="result-body"><div class="empty">还没有结果</div></div>
+    </div>
+  </section>
+
+  <!-- ② 协议自检 -->
+  <section class="panel" id="tab-check">
+    <div class="card">
+      <div class="card-head">
+        <h2>自检参数</h2>
+        <button class="btn primary" id="btn-check">开始自检</button>
+      </div>
+      <div class="grid">
+        <label>查询 SQL<input id="check-sql" value="SELECT 1" spellcheck="false"></label>
+        <label>计数表名（可空）<input id="check-table" placeholder="留空 = 跳过" spellcheck="false"></label>
+        <label class="wide">写语句（可空）<input id="check-write" placeholder="留空 = 跳过；只读数据源应被拒绝" spellcheck="false"></label>
+        <label class="inline">
+          <input type="checkbox" id="check-wrong"> 用错令牌验证错误信封
+          <span class="hint-inline">（会在代理端记一条失败审计）</span>
+        </label>
+      </div>
+      <div class="hint">自检走的就是项目侧那条协议路径：Login → GetTables → Query →（可选）QueryCount / Execute → 错误信封。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>结果</h2>
+        <span class="meta" id="check-meta"></span>
+      </div>
+      <div class="check-list" id="check-list"><div class="empty">还没有运行</div></div>
+    </div>
+  </section>
+
+  <!-- ③ 关于 -->
+  <section class="panel" id="tab-about">
+    <div class="card">
+      <h2>这是什么</h2>
+      <p class="para">
+        给 <b>Pek.RDbProxy</b> 配套的桌面客户端：填一行项目侧连接串，就能验证代理是否可用
+        （连接测试 / SQL 控制台 / 一键自检），也能当日常查数据的小工具。
+      </p>
+      <p class="para">
+        请求走的是 <code>Pek.RCode</code> 的 <code>DbClient</code> —— 和项目里
+        <code>provider=network</code> 用的<strong>完全同一条实现</strong>，所以这里跑通即说明真实消费方能用。
+      </p>
+      <table class="info">
+        <tr><td>版本</td><td id="info-version">—</td></tr>
+        <tr><td>出站 UA</td><td id="info-ua">—</td></tr>
+        <tr><td>协议</td><td id="info-protocol">—</td></tr>
+        <tr><td>连接串保存</td><td>只存在本机浏览器存储（localStorage），不上传任何服务器</td></tr>
+      </table>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="btn-forget">清除本机保存的连接串</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

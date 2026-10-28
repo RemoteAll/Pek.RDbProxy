@@ -38,3 +38,9 @@ pek-rpermissions = { path = "../Pek.RPermissions" }
 pek-radmin = { path = "../Pek.RAdmin" }
 # WAF：所有带网页的项目必须接（admin_api 预设）
 pek-rwaf = { path = "../Pek.RWaf" }
+
+# 桌面工具（`desktop/`，Tauri 2）是**独立的嵌套工作区**：
+# 它有自己的 `desktop/Cargo.toml`（`[workspace]`），不参与本仓包的依赖图。
+# 没有这一行，`desktop/src-tauri` 会被当成成员的候选而报「workspace 归属」错误。
+[workspace]
+exclude = ["desktop"]

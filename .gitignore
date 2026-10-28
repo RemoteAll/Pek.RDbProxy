@@ -26,3 +26,8 @@ Config/.key
 # C# 校验工具（tools/）的编译产物与 NuGet 缓存，一律不入库
 /tools/**/bin/
 /tools/**/obj/
+
+# 桌面工具（desktop/，Tauri 2）：独立工作区的构建产物与自动生成的能力清单
+/desktop/target
+/desktop/**/target
+/desktop/src-tauri/gen/schemas

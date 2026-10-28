@@ -44,6 +44,21 @@ DbClient ──http──► Pek.RDbProxy :5599 ──驱动──► MySQL / PG
 - **驱动组件升级不必重编/重发本程序**：面板「设置 → 驱动组件」可查看清单/安装/升级；离线环境把 `[DriverStore] Url` 设为 `off` 并预置驱动包即可。
 - 配置：`Config/Proxy.toml` 的 `[DriverStore]`（`Url` / `PubKey` / `CaFile` / `ComponentFirst` / `CacheDir`）。
 
+## 桌面工具（`desktop/`，Tauri 2）
+
+配套的桌面客户端：填一行项目侧连接串即可 **连接测试 / 跑 SQL / 一键自检**。
+它走的是 `pek_rcode::db_service::DbClient`——与项目侧 `provider=network` **同一条代码路径**，
+所以这里跑通即说明真实消费方可用。
+
+```powershell
+cd desktop
+cargo test -p pek-rdbproxy-tool-core          # 逻辑 + 协议回归（不需要 GUI）
+cargo run --example probe -- "Server=http://127.0.0.1:5599;Database=demo;Password=<令牌>;provider=network"
+cargo run -p pek-rdbproxy-tool                # 起桌面程序
+```
+
+详见 [`desktop/README.md`](desktop/README.md)。
+
 ## 快速开始
 
 ```powershell

@@ -1,0 +1,17 @@
+# Pek.RDbProxy 桌面工具（Tauri 2）——独立嵌套工作区
+#
+# 与本仓根目录的代理程序**互不干扰**：根 `Cargo.toml` 用 `[workspace] exclude = ["desktop"]`
+# 把它排除在外，因此这里的 `target/`、`Cargo.lock` 都是独立的。
+#
+# 结构（照 `DHFangSite/TauriFangSite` 的成熟布局）：
+#   core/       纯 Rust 逻辑（连接测试 / SQL 控制台 / 协议自检）——可直接 `cargo test`，进 CI
+#   src-tauri/  Tauri 应用外壳（命令绑定，不含业务）
+#   ui/         纯静态前端（`frontendDist: "../ui"`，不需要 Vite/Node 构建链）
+
+[workspace]
+resolver = "2"
+members = ["core", "src-tauri"]
+
+[profile.release]
+lto = "thin"
+strip = true

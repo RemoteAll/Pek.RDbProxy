@@ -8,6 +8,9 @@
 本地/内网**数据库代理**：项目侧只写「代理地址 + 令牌」，真实连接串只留在代理端
 （协议复用 `Pek.RCode` 的 `/Db/*`，与 C# `DbController` 一致）。
 
+- 桌面工具在 `desktop/`（Tauri 2，**独立嵌套工作区**；根 `Cargo.toml` 有 `[workspace] exclude = ["desktop"]`）：
+  `core/` 放业务（可 `cargo test`）、`src-tauri/` 只做命令绑定、`ui/` 纯静态；出站 UA 固定 `pek-rdbproxy-tool/<版本>`。
+
 ## 依赖约定（不要重复造轮子）
 
 | 能力 | 复用来源 | 说明 |
