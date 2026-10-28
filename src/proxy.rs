@@ -134,8 +134,10 @@ pub struct AuditEntry {
     pub token: String,
     /// SQL 摘要
     pub sql: String,
-    /// 错误信息
+    /// 出错信息（仅失败时非空）
     pub error: String,
+    /// 成功时的备注（如字段策略拦截/脱敏提示）——**不占用** `error`，避免面板里把 SQL 盖掉
+    pub note: String,
 }
 
 impl AuditEntry {
@@ -144,7 +146,7 @@ impl AuditEntry {
         json!({
             "at": self.at, "db": self.db, "op": self.op, "ok": self.ok,
             "micros": self.micros, "rows": self.rows, "token": self.token,
-            "sql": self.sql, "error": self.error,
+            "sql": self.sql, "error": self.error, "note": self.note,
         })
     }
 }
@@ -954,8 +956,15 @@ impl Proxy {
         started: Instant,
         ok: bool,
         rows: i64,
-        error: String,
+        message: String,
     ) {
+        // 同一入参两种语义：成功时是「备注」（如字段策略拦截），失败时才是「错误」。
+        // 分开存，面板才能同时看到「实际 SQL」与「备注/错误」。
+        let (error, note) = if ok {
+            (String::new(), message)
+        } else {
+            (message, String::new())
+        };
         let micros = started.elapsed().as_micros() as u64;
         if let Some(source) = self.source_of(db) {
             source.stat.requests.fetch_add(1, Ordering::Relaxed);
@@ -978,6 +987,7 @@ impl Proxy {
             token: mask_token(token),
             sql: summary.clone(),
             error: error.clone(),
+            note: note.clone(),
         };
         if let Ok(mut items) = self.audit.lock() {
             if items.len() == AUDIT_CAPACITY {
@@ -986,7 +996,11 @@ impl Proxy {
             items.push_back(entry);
         }
         if ok {
-            dhrust::info!("db={db} op={op} ok rows={rows} {micros}us sql={summary}");
+            if note.is_empty() {
+                dhrust::info!("db={db} op={op} ok rows={rows} {micros}us sql={summary}");
+            } else {
+                dhrust::info!("db={db} op={op} ok rows={rows} {micros}us sql={summary} note={note}");
+            }
         } else {
             dhrust::warn!("db={db} op={op} FAIL {micros}us sql={summary} err={error}");
         }

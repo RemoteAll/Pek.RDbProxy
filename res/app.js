@@ -916,18 +916,23 @@ async function loadAudit() {
     html += `<div class="empty-state"><div class="empty-icon">📋</div><div>暂无记录（项目侧调用 /Db 后在此显示）</div></div>`;
   } else {
     html += `<table class="svc-table"><thead><tr>
-      <th>时间</th><th>数据源</th><th>操作</th><th>结果</th><th>耗时</th><th>行数</th><th>令牌</th><th>SQL / 错误</th>
+      <th>时间</th><th>数据源</th><th>操作</th><th>结果</th><th>耗时</th><th>行数</th><th>令牌</th><th>SQL（备注 / 错误）</th>
       </tr></thead><tbody>`;
     for (const r of rows) {
+      const sqlCell = r.sql
+        ? `<div class="audit-sql" title="${esc(r.sql)}">${esc(r.sql)}</div>`
+        : '<div class="audit-sql text-muted">—</div>';
+      const noteCell = r.note ? `<div class="audit-note">备注：${esc(r.note)}</div>` : '';
+      const errCell = r.error ? `<div class="audit-err">错误：${esc(r.error)}</div>` : '';
       html += `<tr>
         <td class="font-mono" style="white-space:nowrap">${esc(r.at)}</td>
         <td>${esc(r.db)}</td>
         <td>${esc(r.op)}</td>
         <td>${r.ok ? '<span class="badge badge-green">成功</span>' : '<span class="badge badge-red">失败</span>'}</td>
         <td class="font-mono" style="white-space:nowrap">${fmtUs(r.micros)}</td>
-        <td class="font-mono">${r.rows}</td>
+        <td class="font-mono">${r.rows < 0 ? '—' : esc(r.rows)}</td>
         <td class="font-mono text-muted">${esc(r.token || '—')}</td>
-        <td class="font-mono" style="word-break:break-all;max-width:520px">${esc(r.error || r.sql || '—')}</td>
+        <td class="font-mono" style="word-break:break-all;max-width:520px">${sqlCell}${noteCell}${errCell}</td>
       </tr>`;
     }
     html += '</tbody></table>';

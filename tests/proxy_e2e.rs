@@ -240,10 +240,20 @@ fn panel_login_uses_jwt_and_crud_works() {
     let client = DbClient::new(format!("http://{addr}"), "demo", Some("tk-test-123456"));
     client.login().expect("协议登录");
     let _ = client.query_count("t");
+    // 触发字段策略备注（默认 enforce 白名单：未登记列会被拦截）
+    let _ = client.query_rowset("SELECT Id, Name FROM t", None);
     let (status, body) = http(&addr, "GET", "/api/audit?n=20", Some(&token), None);
     assert_eq!(status, 200);
     assert!(body.contains("\"op\":\"Login\""), "审计应含协议调用：{body}");
     assert!(body.contains("****"), "审计里令牌应是指纹：{body}");
+    assert!(
+        body.contains("\"sql\":\"SELECT Id, Name FROM t\""),
+        "审计必须记录**实际 SQL**：{body}"
+    );
+    assert!(
+        body.contains("\"note\":\"字段已拦截"),
+        "字段策略备注要单独进 note（不能顶掉 SQL）：{body}"
+    );
 
     let _ = std::fs::remove_dir_all(&base);
 }

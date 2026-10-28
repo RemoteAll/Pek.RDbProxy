@@ -336,11 +336,14 @@ html.light .ai-msg pre{background:rgba(0,0,0,0.05)}
 .ap-drop-zone{margin:12px 0 16px;padding:16px 14px;text-align:center;border:2px dashed var(--border-default);border-radius:var(--radius-md);color:var(--text-tertiary);font-size:13px;cursor:pointer;transition:border-color var(--duration-fast),background var(--duration-fast),color var(--duration-fast)}
 .ap-drop-zone:hover{border-color:var(--brand-500);color:var(--text-primary);background:var(--gradient-brand-soft)}
 #panel-services.ap-drag .ap-drop-zone{border-color:var(--brand-500);background:var(--gradient-brand-soft);color:var(--text-primary)}
-/* ── 驱动组件（设置页） ── */
-.tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;background:var(--surface-2);border:1px solid var(--border-default);color:var(--text-secondary)}
+/* ── 驱动组件（设置页） ── */.tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;background:var(--surface-2);border:1px solid var(--border-default);color:var(--text-secondary)}
 .tag-ok{color:#22c55e;border-color:rgba(34,197,94,.4)}
 .muted{color:var(--text-muted)}
 .drv-state{margin-left:6px;font-size:12px;font-weight:500}
 .drv-state.on{color:#22c55e}
 .drv-state.off{color:#f59e0b}
 .drv-state.bad{color:#ef4444}
+/* ── SQL 审计：SQL 与备注/错误分行显示 ── */
+.audit-sql{white-space:pre-wrap;word-break:break-all}
+.audit-note{margin-top:2px;font-size:11.5px;line-height:1.5;color:#b45309}
+.audit-err{margin-top:2px;font-size:11.5px;line-height:1.5;color:#dc2626}
