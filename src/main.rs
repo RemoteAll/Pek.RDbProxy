@@ -94,13 +94,15 @@ fn main() {
         // `-s` 是服务管理器（dhrust service）注册时使用的服务模式参数；必须与服务路径一致，
         // 否则 SCM 拉起的进程会因"未知参数"直接退出 → StartService 1053。
         Some("-run" | "--run" | "-s" | "--service") | None => {
+            // 无参数 = 人双击/直接执行：允许首次运行自动生成配置模板
+            let interactive = args.is_empty();
             // 以 Windows 服务方式被 SCM 拉起时走服务分发器（必须尽快向 SCM 报 RUNNING，
             // 否则 StartService 会 1053 超时）；非服务环境由库内部自动回退前台运行。
             #[cfg(windows)]
             {
                 let b = base.clone();
                 let run = move || {
-                    run_command(b.clone());
+                    run_command(b.clone(), interactive);
                 };
                 dhrust::service::windows::run_as_service(
                     "PekRDbProxy",
@@ -111,7 +113,7 @@ fn main() {
             }
             #[cfg(not(windows))]
             {
-                run_command(base)
+                run_command(base, interactive)
             }
         }
         Some(other) => {
@@ -423,7 +425,28 @@ fn find_agent_config() -> Option<std::path::PathBuf> {
 }
 
 /// 启动代理服务。
-fn run_command(base: std::path::PathBuf) -> i32 {
+///
+/// `interactive`：是否人双击/无参数直接启动（非服务、非 -run）。
+/// 此时若配置还没生成，**自动写出模板并继续启动**——否则双击时黑窗口一闪而过，
+/// 用户只会看到「打开就退出」。服务/`-run` 仍是「配置就绪才运行」的守卫。
+fn run_command(base: std::path::PathBuf, interactive: bool) -> i32 {
+    if interactive && !config::config_path(&base).is_file() {
+        match config::write_template(&base) {
+            Ok(path) => {
+                dhrust::warn!(
+                    "首次运行：已生成配置模板（示例数据源 demo，只读）{}；可在面板里改成真实连接串",
+                    path.display()
+                );
+                println!("首次运行：已生成配置模板{}", path.display());
+                println!("示例数据源 demo → Data/demo.db（只读）；面板里可增删改数据源。");
+            }
+            Err(e) => {
+                dhrust::error!("首次运行生成配置模板失败（{}）：{e}", base.display());
+                eprintln!("首次运行生成配置模板失败：{e}");
+                return 1;
+            }
+        }
+    }
     let cfg = match config::load(&base) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -484,6 +507,11 @@ fn run_command(base: std::path::PathBuf) -> i32 {
     dhrust::info!(
         "项目侧连接串：Server=http://{local};Database=<Name>;Password=<Token>;provider=network"
     );
+    if interactive {
+        println!("已启动：http://{local}");
+        println!("面板：http://{local}/");
+        println!("关闭此窗口 = 停止代理；长期运行请用 -install 装为系统服务，或 -RegisterAgent 交给星尘托管。");
+    }
 
     // 监听热重绑：面板改端口/远程访问后立即切换，无需重启进程
     let slot = Arc::new(std::sync::Mutex::new(Some(listener)));

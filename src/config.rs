@@ -125,7 +125,7 @@ pub fn load(base: &Path) -> Result<ProxyConfig, String> {
     let path = config_path(base);
     if !path.is_file() {
         return Err(format!(
-            "配置文件不存在：{}（先运行 `pek-rdbproxy -init` 生成模板）",
+            "配置文件不存在：{}（直接双击运行会自动生成模板，或运行 `pek-rdbproxy -init`）",
             path.display()
         ));
     }
@@ -241,5 +241,25 @@ mod tests {
         assert_eq!(cfg.databases.len(), 1);
         assert_eq!(cfg.databases[0].name, "demo");
         assert!(cfg.databases[0].read_only);
+        // [DriverStore]：空 Url = 平台默认组件源；组件优先默认关闭（内置驱动零网络）
+        assert!(cfg.driver_store.url.is_empty());
+        assert!(!cfg.driver_store.component_first);
+        assert!(cfg.driver_store.cache_dir.is_empty());
+    }
+
+    #[test]
+    fn missing_config_is_reported_with_double_click_hint() {
+        // 首次运行（双击）依赖这条判断：不存在即自动写模板，文案要告诉用户两条路径
+        let base = std::env::temp_dir().join(format!(
+            "rdbproxy-config-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let error = load(&base).expect_err("缺失配置应报错");
+        assert!(error.contains("配置文件不存在"), "{error}");
+        assert!(error.contains("双击"), "提示要给出双击这条路：{error}");
     }
 }
