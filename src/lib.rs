@@ -13,6 +13,7 @@ pub mod panel;
 pub mod policy;
 pub mod proxy;
 pub mod service;
+pub mod toolhub;
 
 /// 程序基目录（`PEK_RDBPROXY_BASE` 环境变量可覆盖）。
 pub fn base_dir() -> std::path::PathBuf {

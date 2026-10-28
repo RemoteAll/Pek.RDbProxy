@@ -10,6 +10,10 @@
 - **协议自检**：Login → GetTables → Query →（可选）QueryCount / Execute → 错误信封，报告可一键复制
 - **导入 / 导出**：JSON；导出含明文令牌（有醒目提示），导入按「名称 + 数据源」合并
 - **草稿**：每个连接各存一份 SQL 草稿，切换连接不丢
+- **登录代理**（顶栏「登录代理…」）：用面板账号登录后每个请求带用户令牌 —— 代理端能看出**是谁在查**、
+  按这个人的**数据源权限**放行；令牌只留在进程内存，不落盘、不下发页面，且只在服务器地址一致时才附带
+- **自升级**（关于页「检测更新」）：代理面板「设置 → 🖥 桌面工具」上传新版本后，这里比对版本 →
+  下载 → 校大小/SHA-256/PE 头 → 原地替换并重启（走 `dhrust::upgrade::replace_file`）
 
 > 它本身就是**一个真实消费方**：请求走 `Pek.RCode` 的 `DbClient`，与项目里
 > `Server=…;Database=<数据源名>;Password=<令牌>;provider=network` **完全同一条代码路径**，
@@ -30,10 +34,10 @@
 ```
 desktop/
 ├─ Cargo.toml          # 独立嵌套工作区（根 Cargo.toml 用 exclude 排除）
-├─ core/               # 纯 Rust 逻辑：连接串解析 / 操作 / 自检 / 工作区存储（可 cargo test，进 CI）
-│  ├─ src/{lib,client,check,store}.rs
+├─ core/               # 纯 Rust 逻辑：连接串解析 / 操作 / 自检 / 登录 / 升级 / 工作区存储（可 cargo test，进 CI）
+│  ├─ src/{lib,client,check,auth,update,store}.rs
 │  ├─ tests/protocol_stub.rs   # 最小 HTTP 桩：断言协议路径与出站 UA
-│  └─ examples/{probe,ws_seed}.rs   # 命令行自检 / 写入示例工作区
+│  └─ examples/{probe,ws_seed,proxy_probe}.rs   # 命令行自检 / 示例工作区 / 登录+检测更新
 ├─ src-tauri/          # Tauri 外壳：只做命令绑定（async + spawn_blocking）
 └─ ui/                 # 纯静态前端（frontendDist，无需 Vite/Node 构建链）
 ```
@@ -47,6 +51,9 @@ cargo test -p pek-rdbproxy-tool-core
 
 # 命令行自检（不需要 GUI）
 cargo run --example probe -- "Server=http://127.0.0.1:5599;Database=demo;Password=<令牌>;provider=network"
+
+# 登录代理 + 检查工具更新（不需要 GUI；走与界面同一条代码）
+cargo run --example proxy_probe -- http://127.0.0.1:5599 <用户名> <密码>
 
 # 开发运行桌面程序（需 WebView2，Win10/11 自带）
 cargo run -p pek-rdbproxy-tool

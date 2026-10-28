@@ -31,10 +31,28 @@ pub const ALL_PERMISSIONS: &[(&str, &str)] = &[
 /// 用户管理权限（**不在可授予表内**：只有内置管理员/本机免登录有）。
 pub const PERM_USERS: &str = "users";
 
+/// 全部数据源（读 + 写）通配权限。
+pub const PERM_DB_ALL: &str = "db:*";
+
+/// 数据源「读」权限键（`db:read:<数据源名>`）。
+pub fn db_read_key(source: &str) -> String {
+    format!("db:read:{}", source.trim())
+}
+
+/// 数据源「读写」权限键（`db:write:<数据源名>`）。
+pub fn db_write_key(source: &str) -> String {
+    format!("db:write:{}", source.trim())
+}
+
+/// 是否数据源权限键（`db:*` / `db:read:*` / `db:write:*`）。
+pub fn is_db_key(key: &str) -> bool {
+    key == PERM_DB_ALL || key.starts_with("db:read:") || key.starts_with("db:write:")
+}
+
 /// 面板权限表（key → 中文名）。
 pub fn auth() -> &'static PanelAuth {
     static AUTH: OnceLock<PanelAuth> = OnceLock::new();
-    AUTH.get_or_init(|| PanelAuth::new(ALL_PERMISSIONS))
+    AUTH.get_or_init(|| PanelAuth::new(ALL_PERMISSIONS).allow_prefix("db:"))
 }
 
 /// 权限 key 列表（内置管理员全给）。
@@ -44,6 +62,15 @@ pub fn all_keys() -> Vec<String> {
 
 /// 权限中文名。
 pub fn permission_name(key: &str) -> String {
+    if let Some(rest) = key.strip_prefix("db:read:") {
+        return format!("读数据源 {rest}");
+    }
+    if let Some(rest) = key.strip_prefix("db:write:") {
+        return format!("读写数据源 {rest}");
+    }
+    if key == PERM_DB_ALL {
+        return "全部数据源（读 + 写）".to_string();
+    }
     ALL_PERMISSIONS
         .iter()
         .find(|(k, _)| *k == key)

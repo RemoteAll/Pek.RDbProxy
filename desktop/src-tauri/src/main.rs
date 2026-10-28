@@ -14,9 +14,11 @@ use pek_rdbproxy_tool_core as tool;
 use serde_json::{Value, json};
 use tauri::Manager;
 
-/// 应用状态：工作区存储（单进程单实例，用互斥锁串行化）。
+/// 应用状态：工作区存储（单进程单实例，用互斥锁串行化）+ 当前登录会话。
 struct AppState {
     store: Arc<Mutex<tool::Store>>,
+    /// 登录代理后的会话（只在本进程内存；令牌不下发前端）
+    session: Arc<Mutex<Option<tool::Session>>>,
 }
 
 /// 一次执行的回填信息（进历史）。
@@ -51,19 +53,40 @@ where
 }
 
 /// 取要用的连接：**优先工作区 id**（令牌只在 Rust 侧解密），否则用临时连接串。
+///
+/// 已登录且**服务器地址一致**时自动带上用户令牌（代理端据此按人鉴权、审计记人）；
+/// 服务器地址不一致时**不带**——不把令牌发给别的代理。
 fn resolve_target(
     store: &Arc<Mutex<tool::Store>>,
+    session: &Option<tool::Session>,
     conn_id: &Option<String>,
     conn: &Option<String>,
 ) -> Result<tool::Target, String> {
-    if let Some(id) = conn_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let target = if let Some(id) = conn_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let guard = store
             .lock()
             .map_err(|_| "工作区锁异常（上一个操作可能崩溃）".to_string())?;
-        return guard.connection_target(id);
+        guard.connection_target(id)?
+    } else {
+        let raw = conn.as_deref().unwrap_or_default();
+        tool::Target::parse(raw)?
+    };
+    let Some(session) = session else {
+        return Ok(target);
+    };
+    if session.server.eq_ignore_ascii_case(&target.server) {
+        return Ok(target.with_bearer(Some(session.token.clone())));
     }
-    let raw = conn.as_deref().unwrap_or_default();
-    tool::Target::parse(raw)
+    eprintln!(
+        "未给 {} 附带用户令牌（已登录的是 {}）",
+        target.server, session.server
+    );
+    Ok(target)
+}
+
+/// 取当前会话（拿不到锁就当未登录）。
+fn current_session(state: &tauri::State<'_, AppState>) -> Option<tool::Session> {
+    state.session.lock().ok().and_then(|guard| guard.clone())
 }
 
 /// 记录一次执行：更新连接健康状态 + 追加历史（失败不影响主流程，只记日志）。
@@ -259,11 +282,13 @@ async fn tool_login(
     conn: Option<String>,
 ) -> Result<Value, String> {
     let store = Arc::clone(&state.store);
+    let session = current_session(&state);
     let call = {
         let store = Arc::clone(&store);
+        let session = session.clone();
         let conn_id = conn_id.clone();
         run_meta(move || {
-            let view = tool::login(&resolve_target(&store, &conn_id, &conn)?)?;
+            let view = tool::login(&resolve_target(&store, &session, &conn_id, &conn)?)?;
             let meta = RunMeta { rows: 0, micros: view.elapsed_ms };
             Ok((view, meta))
         })
@@ -281,12 +306,14 @@ async fn tool_query(
     sql: String,
 ) -> Result<Value, String> {
     let store = Arc::clone(&state.store);
+    let session = current_session(&state);
     let call = {
         let store = Arc::clone(&store);
+        let session = session.clone();
         let conn_id = conn_id.clone();
         let sql = sql.clone();
         run_meta(move || {
-            let view = tool::query(&resolve_target(&store, &conn_id, &conn)?, &sql)?;
+            let view = tool::query(&resolve_target(&store, &session, &conn_id, &conn)?, &sql)?;
             let meta = RunMeta { rows: view.row_count as i64, micros: view.elapsed_ms };
             Ok((view, meta))
         })
@@ -304,12 +331,14 @@ async fn tool_execute(
     sql: String,
 ) -> Result<Value, String> {
     let store = Arc::clone(&state.store);
+    let session = current_session(&state);
     let call = {
         let store = Arc::clone(&store);
+        let session = session.clone();
         let conn_id = conn_id.clone();
         let sql = sql.clone();
         run_meta(move || {
-            let view = tool::execute(&resolve_target(&store, &conn_id, &conn)?, &sql)?;
+            let view = tool::execute(&resolve_target(&store, &session, &conn_id, &conn)?, &sql)?;
             let meta = RunMeta { rows: view.affected, micros: view.elapsed_ms };
             Ok((view, meta))
         })
@@ -326,11 +355,13 @@ async fn tool_tables(
     conn: Option<String>,
 ) -> Result<Value, String> {
     let store = Arc::clone(&state.store);
+    let session = current_session(&state);
     let call = {
         let store = Arc::clone(&store);
+        let session = session.clone();
         let conn_id = conn_id.clone();
         run_meta(move || {
-            let view = tool::tables(&resolve_target(&store, &conn_id, &conn)?)?;
+            let view = tool::tables(&resolve_target(&store, &session, &conn_id, &conn)?)?;
             let meta = RunMeta { rows: view.count as i64, micros: view.elapsed_ms };
             Ok((view, meta))
         })
@@ -348,13 +379,15 @@ async fn tool_count(
     table: String,
 ) -> Result<Value, String> {
     let store = Arc::clone(&state.store);
+    let session = current_session(&state);
     let sql = format!("SELECT COUNT(*) FROM {table}");
     let call = {
         let store = Arc::clone(&store);
+        let session = session.clone();
         let conn_id = conn_id.clone();
         let table = table.clone();
         run_meta(move || {
-            let view = tool::count(&resolve_target(&store, &conn_id, &conn)?, &table)?;
+            let view = tool::count(&resolve_target(&store, &session, &conn_id, &conn)?, &table)?;
             let meta = RunMeta { rows: view.count, micros: view.elapsed_ms };
             Ok((view, meta))
         })
@@ -372,11 +405,13 @@ async fn tool_selfcheck(
     options: tool::SelfCheckOptions,
 ) -> Result<Value, String> {
     let store = Arc::clone(&state.store);
+    let session = current_session(&state);
     let call = {
         let store = Arc::clone(&store);
+        let session = session.clone();
         let conn_id = conn_id.clone();
         run_meta(move || {
-            let target = resolve_target(&store, &conn_id, &conn)?;
+            let target = resolve_target(&store, &session, &conn_id, &conn)?;
             let report = tool::selfcheck(&target, &options);
             let meta = RunMeta { rows: 0, micros: report.total_ms };
             Ok((report, meta))
@@ -402,6 +437,109 @@ async fn tool_info(state: tauri::State<'_, AppState>) -> Result<Value, String> {
     }))
 }
 
+/* ── 登录代理 / 工具自升级 ─────────────────────── */
+
+/// 会话视图（**不含令牌**：令牌只留在 Rust 侧）。
+fn session_view(session: &tool::Session) -> Value {
+    json!({
+        "server": session.server,
+        "user": session.user,
+        "builtin": session.builtin,
+        "permissions": session.permissions,
+        "summary": session.permission_summary(),
+        // 弱口令被自动升级时的新密码：只出现这一次
+        "newPassword": session.new_password,
+    })
+}
+
+/// 用面板账号登录代理（之后所有请求自动带用户令牌）。
+#[tauri::command]
+async fn user_login(
+    state: tauri::State<'_, AppState>,
+    server: String,
+    user: String,
+    password: String,
+) -> Result<Value, String> {
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        tool::proxy_login(&server, &user, &password)
+    })
+    .await
+    .map_err(|e| format!("后台任务失败（线程异常）：{e}"))??;
+    let view = session_view(&session);
+    *state
+        .session
+        .lock()
+        .map_err(|_| "会话锁异常".to_string())? = Some(session);
+    Ok(view)
+}
+
+/// 退出登录（令牌丢弃即可；JWT 无状态）。
+#[tauri::command]
+async fn user_logout(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    *state
+        .session
+        .lock()
+        .map_err(|_| "会话锁异常".to_string())? = None;
+    Ok(json!({ "ok": true }))
+}
+
+/// 当前登录状态（未登录返回 `user = null`）。
+#[tauri::command]
+async fn user_session(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    match current_session(&state) {
+        Some(session) => Ok(session_view(&session)),
+        None => Ok(json!({ "user": Value::Null })),
+    }
+}
+
+/// 检查代理上托管的工具版本（与当前版本比对）。
+#[tauri::command]
+async fn update_check(server: String) -> Result<Value, String> {
+    let check = tauri::async_runtime::spawn_blocking(move || tool::update::check(&server))
+        .await
+        .map_err(|e| format!("后台任务失败（线程异常）：{e}"))??;
+    serde_json::to_value(check).map_err(|e| format!("结果序列化失败：{e}"))
+}
+
+/// 下载并升级本工具，随后重启（旧的进程退出）。
+#[tauri::command]
+async fn update_install(
+    app: tauri::AppHandle,
+    server: String,
+) -> Result<Value, String> {
+    let (exe, check) = tauri::async_runtime::spawn_blocking(move || {
+        let check = tool::update::check(&server)?;
+        if !check.present || !check.newer {
+            return Err(format!(
+                "没有可升级的版本（当前 {}，代理上 {}）",
+                check.current,
+                if check.latest.is_empty() {
+                    "没有工具包"
+                } else {
+                    &check.latest
+                }
+            ));
+        }
+        let exe = tool::update::install(&check)?;
+        Ok::<_, String>((exe, check))
+    })
+    .await
+    .map_err(|e| format!("后台任务失败（线程异常）：{e}"))??;
+
+    tool::update::restart(&exe)?;
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        handle.exit(0);
+    });
+    Ok(json!({
+        "exe": exe.display().to_string(),
+        "from": check.current,
+        "to": check.latest,
+        "restarting": true,
+    }))
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -412,6 +550,7 @@ fn main() {
             let store = tool::Store::open(dir).map_err(|e| format!("打开工作区失败：{e}"))?;
             app.manage(AppState {
                 store: Arc::new(Mutex::new(store)),
+                session: Arc::new(Mutex::new(None)),
             });
             Ok(())
         })
@@ -433,6 +572,11 @@ fn main() {
             tool_count,
             tool_selfcheck,
             tool_info,
+            user_login,
+            user_logout,
+            user_session,
+            update_check,
+            update_install,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Pek.RDbProxy 桌面工具失败");

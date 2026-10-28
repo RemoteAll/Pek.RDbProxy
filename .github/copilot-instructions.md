@@ -26,7 +26,17 @@
 | 服务化 | `dhrust::service::ServiceManager` | Windows SCM / systemd |
 | 星尘托管 | `dhrust::staragent::register` | Mode=11 影子模式 |
 | 自升级 | `Update/` 目录热检测 + 原子替换（参考 `Pek.RAgent`） | 覆盖即升级 |
+| 用户/权限/审计 | `pek_radmin::panel::{PanelAuth, PanelUser, AuditEntry}` | `PanelAuth::allow_prefix("db:")` 才保留动态权限键 |
+| 数据源级权限 | `db:*` / `db:read:<源>` / `db:write:<源>`（`src/admin.rs`） | `/Db/*` 在数据源令牌之后按人放行；不带 Bearer = 旧行为 |
+| 工具包托管 | `dhrust::upgrade::PackageStore`（`{base}/Tools/`）+ `src/toolhub.rs` | 面板上传 / 免登录查询下载；不要自定义包格式 |
+| 工具自升级 | `dhrust::version::is_newer` + `dhrust::upgrade::{is_executable, replace_file}` | `desktop/core/src/update.rs`；开发构建拒绝自替换 |
 | 日志 / 配置 / 加密 | `dhrust::logs` / `dhrust::config` / `dhrust::secret` | — |
+
+## 改前端前必读
+
+- `res/{index.html,app.css,app.js}` 与桌面 `ui/*` 都是**内嵌/静态**：改 `res/` 必须重编本仓，浏览器还可能命中旧缓存（复验强制刷新）。
+- `document.querySelectorAll(...)` 返回 NodeList，**没有** `.filter`/`.map`，要 `[...]` 展开再用。
+- 弹窗 `.modal-box` 有 `max-height:90vh` + 内容区滚动：新加长内容不要写死高度。
 
 ## 每轮收尾（务必）
 

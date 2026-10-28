@@ -46,7 +46,12 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
 
     // ── WAF：所有带网页的项目必须接；`/Db` 是机器协议（SQL 文本、无浏览器 UA），必须豁免
     let mut waf_config = pek_rwaf::WafConfig::admin_api();
-    waf_config.skip_attack_prefixes = vec!["/Db".to_string(), "/api/upgrade".to_string()];
+    waf_config.skip_attack_prefixes = vec![
+        "/Db".to_string(),
+        "/api/upgrade".to_string(),
+        // 工具包上传/下载是二进制体，按注入特征扫会误伤
+        "/api/tool".to_string(),
+    ];
     let waf = pek_rwaf::Waf::load_with_default(proxy.base(), waf_config);
     waf.set_forced_skip_bot_prefixes(vec!["/Db".to_string()]);
     router.use_middleware(waf.middleware());
@@ -61,7 +66,10 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
             let proxy = Arc::clone(&proxy);
             Box::pin(async move {
                 let path = ctx.req.path.clone();
-                if !path.starts_with("/Db") && proxy.server_config().panel_local_only {
+                // `/Db/*` 是机器协议；`GET /api/tool*` 是工具端检查更新/下载（只读、无敏感信息）
+                let client_ok = path.starts_with("/Db")
+                    || (ctx.req.method.eq_ignore_ascii_case("GET") && path.starts_with("/api/tool"));
+                if !client_ok && proxy.server_config().panel_local_only {
                     let ip = client_ip(&ctx);
                     if !is_loopback(&ip) {
                         dhrust::warn!("面板被非本机访问拒绝：ip={ip} path={path}");
@@ -95,6 +103,10 @@ pub fn build_router(proxy: Arc<Proxy>) -> Router {
     router.map_get("/api/drivers", guard(Arc::clone(&proxy), "settings", drivers_report));
     router.map_post("/api/drivers/install", guard(Arc::clone(&proxy), "settings", driver_install));
     router.map_post("/api/drivers/config", guard(Arc::clone(&proxy), "settings", save_driver_store));
+    // 桌面工具包：上传（需 settings 权限）+ 检查/下载（免登录只读，工具端用）
+    router.map_get("/api/tool", tool_info(Arc::clone(&proxy)));
+    router.map_get("/api/tool/download/{file}", tool_download(Arc::clone(&proxy)));
+    router.map_post("/api/tool/upload/{version}", guard(Arc::clone(&proxy), "settings", tool_upload));
     router.map_get("/api/fields", guard(Arc::clone(&proxy), "fields", list_fields));
     router.map_post("/api/fields", guard(Arc::clone(&proxy), "fields", save_field));
     router.map_post("/api/fields/delete", guard(Arc::clone(&proxy), "fields", delete_field));
@@ -862,7 +874,101 @@ fn save_driver_store(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
     }
 }
 
+/// `GET /api/tool`：代理上托管的桌面工具版本（**免登录只读**，工具端检查更新用）。
+fn tool_info(proxy: Arc<Proxy>) -> dhrust::net::router::RouteHandler {
+    route(move |_ctx: Ctx| {
+        let proxy = Arc::clone(&proxy);
+        async move { HttpOutcome::Response(ok(crate::toolhub::info(proxy.base()))) }
+    })
+}
+
+/// `GET /api/tool/download/{file}`：下载工具包（`latest` 或空 = 最新版）。
+fn tool_download(proxy: Arc<Proxy>) -> dhrust::net::router::RouteHandler {
+    route(move |ctx: Ctx| {
+        let proxy = Arc::clone(&proxy);
+        async move {
+            let wanted = ctx.param("file").unwrap_or_default().trim().to_string();
+            let store = crate::toolhub::store(proxy.base());
+            let file = if wanted.is_empty() || wanted.eq_ignore_ascii_case("latest") {
+                match crate::toolhub::latest(proxy.base()) {
+                    Some(pkg) => pkg.file,
+                    None => {
+                        return HttpOutcome::Response(fail(
+                            404,
+                            "代理上还没有上传桌面工具（面板「设置 → 桌面工具」上传）",
+                        ));
+                    }
+                }
+            } else {
+                wanted
+            };
+            match store.read(&file) {
+                Ok(bytes) => HttpOutcome::Response(HttpResponse::bytes(
+                    200,
+                    "application/octet-stream",
+                    bytes,
+                )),
+                Err(e) => HttpOutcome::Response(fail(404, &e)),
+            }
+        }
+    })
+}
+
+/// `POST /api/tool/upload/{version}`：上传桌面工具新版本（需要 `settings` 权限）。
+///
+/// 与代理自升级同一套校验：体积上限 64MB + PE/ELF 文件头；存储走
+/// `dhrust::upgrade::PackageStore`（同名同版本覆盖）。
+fn tool_upload(proxy: &Proxy, ctx: &Ctx) -> HttpResponse {
+    let version = ctx
+        .param("version")
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches('v')
+        .to_string();
+    if version.is_empty() || version.eq_ignore_ascii_case("latest") {
+        return fail(
+            400,
+            "缺少版本号：用 /api/tool/upload/<版本>（面板会从文件名自动提取，可手改）",
+        );
+    }
+    let body = &ctx.req.body;
+    if body.is_empty() {
+        return fail(400, "没有收到文件内容（请选择 pek-rdbproxy-tool.exe 再上传）");
+    }
+    if body.len() > crate::toolhub::MAX_BYTES {
+        return fail(413, "文件过大（上限 64MB）");
+    }
+    if !dhrust::upgrade::is_executable(body) {
+        return fail(400, "不是有效的可执行文件（需要 PE 或 ELF 文件头）");
+    }
+    let notes = ctx.query_value("notes").unwrap_or_default();
+    match crate::toolhub::store(proxy.base()).save(&version, "", body, notes) {
+        Ok(pkg) => {
+            dhrust::info!(
+                "桌面工具已上传：v{}（{} 字节，sha256={}）",
+                pkg.version,
+                pkg.size,
+                &pkg.sha256[..12.min(pkg.sha256.len())]
+            );
+            ok(json!({
+                "version": pkg.version,
+                "size": pkg.size,
+                "sha256": pkg.sha256,
+                "uploadedAt": pkg.uploaded_at,
+                "notes": pkg.notes,
+                "file": pkg.file,
+                "downloadUrl": format!("/api/tool/download/{}", pkg.file),
+            }))
+        }
+        Err(e) => fail(400, &e),
+    }
+}
+
 /// `/Db/{action}`：转发到代理核心。
+///
+/// 带了 `Authorization: Bearer <用户令牌>` 就按用户身份鉴权（数据源权限 + 审计记人）；
+/// 没带则视为旧式项目侧调用（只认数据源令牌），行为与以前一致。
+/// **带了但无效**不会静默降级，直接 401，避免“去掉令牌就绕过用户限制”。
 fn db_call(proxy: Arc<Proxy>, method: &'static str) -> dhrust::net::router::RouteHandler {
     route(move |ctx: Ctx| {
         let proxy = Arc::clone(&proxy);
@@ -870,9 +976,49 @@ fn db_call(proxy: Arc<Proxy>, method: &'static str) -> dhrust::net::router::Rout
             let action = ctx.param("action").unwrap_or_default().to_string();
             let body = ctx.req.body.to_vec();
             let query = ctx.req.query.clone();
-            let response = proxy.handle_db(&action, method, &body, &query);
+            let caller = match bearer_token(&ctx) {
+                None => None,
+                Some(token) => match caller_of(&proxy, &token) {
+                    Some(caller) => Some(caller),
+                    None => {
+                        return HttpOutcome::Response(crate::proxy::db_error(
+                            401,
+                            "用户令牌无效或已过期（请重新登录；项目侧可只带数据源令牌）",
+                        ));
+                    }
+                },
+            };
+            let response = proxy.handle_db(&action, method, &body, &query, caller.as_ref());
             HttpOutcome::Response(response)
         }
+    })
+}
+
+/// 校验用户令牌并构造调用者身份（`/Db/*` 用）。
+fn caller_of(proxy: &Proxy, token: &str) -> Option<crate::proxy::Caller> {
+    let jwt = proxy.jwt().ok()?;
+    let claims = jwt.validate(token).ok()?;
+    let user = claims.get("sub").and_then(Value::as_str)?.trim().to_string();
+    if user.is_empty() {
+        return None;
+    }
+    let builtin = claims
+        .get("builtin")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let perms = claims
+        .get("perms")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(crate::proxy::Caller {
+        user,
+        perms,
+        builtin,
     })
 }
 

@@ -20,6 +20,8 @@
     <span class="health" id="cur-health"></span>
   </div>
   <div class="row">
+    <span class="health none" id="user-chip" title="未登录时代理只能按数据源令牌鉴权">未登录</span>
+    <button class="btn ghost" id="btn-user-login" title="登录代理后可看出是谁在查，并按其数据源权限放行">登录代理…</button>
     <button class="btn" id="btn-login" title="Ctrl+L">连接测试</button>
     <button class="btn ghost" id="btn-adhoc">临时连接…</button>
   </div>
@@ -152,6 +154,18 @@
           <tr><td>令牌存储</td><td>本机 AES-256-GCM 加密（<code>.key</code> 不随导出、不入库）</td></tr>
           <tr><td>历史上限</td><td id="info-hist">—</td></tr>
         </table>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>检查更新 <span class="hint-inline" id="update-current"></span></h2>
+          <div class="row">
+            <input id="up-server" class="mini wide" placeholder="代理地址（留空 = 用当前连接 / 登录的代理）" spellcheck="false">
+            <button class="btn" id="btn-check-update">检测更新</button>
+            <button class="btn primary" id="btn-do-update" disabled>立即升级</button>
+          </div>
+        </div>
+        <div id="update-body" class="hint">点「检测更新」查询代理上托管的工具版本（代理面板「设置 → 桌面工具」上传新版本）。升级会校验 SHA-256 后原地替换本程序并重启。</div>
       </div>
     </section>
   </main>

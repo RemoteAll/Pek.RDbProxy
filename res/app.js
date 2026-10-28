@@ -774,9 +774,20 @@ async function loadUsers(silent) {
 }
 
 function permName(key) {
+  // 数据源权限（`db:*` / `db:read:<名>` / `db:write:<名>`）本地就能翻译，不必依赖后端
+  if (key === 'db:*') return '全部数据源（读+写）';
+  if (key && key.startsWith('db:read:')) return '读数据源 ' + key.slice(8);
+  if (key && key.startsWith('db:write:')) return '读写数据源 ' + key.slice(9);
   const list = (usersData && usersData.permissions) || [];
   const hit = list.find(p => p.key === key || p.name === key);
   return hit ? (hit.name || key) : key;
+}
+
+/** 数据源权限当前模式：'' / 'read' / 'write' */
+function dbMode(db, perms) {
+  if ((perms || []).includes('db:write:' + db)) return 'write';
+  if ((perms || []).includes('db:read:' + db)) return 'read';
+  return '';
 }
 
 function renderUsers() {
@@ -802,6 +813,8 @@ function renderUsers() {
     const tags = (u.permissionNames && u.permissionNames.length
       ? u.permissionNames
       : (u.permissions || []).map(permName))
+      // 数据源权限统一用本地中文名（后端只会回原始键 `db:read:<名>`）
+      .map(n => (n && n.startsWith('db:') ? permName(n) : n))
       .map(n => `<span class="badge badge-gray" style="margin:1px 3px">${esc(n)}</span>`).join('');
     html += `<tr>
       <td class="font-mono">${esc(u.userName)}${u.builtin ? ' <span class="badge badge-green">内置</span>' : ''}</td>
@@ -851,6 +864,18 @@ function editUser(name) {
       <input type="checkbox" class="f-perm" value="${esc(p.key)}"${curPerms.includes(p.key) ? ' checked' : ''}>
       <span>${esc(p.name)}</span>
     </label>`).join('');
+  // 数据源权限：每个数据源三档（无 / 只读 / 读写）；`db:*` 一键全给
+  const sources = (status && status.sources) || [];
+  const allDb = curPerms.includes('db:*');
+  const dbRows = sources.map(s => `
+    <tr>
+      <td class="font-mono">${esc(s.name)}</td>
+      <td><select class="f-db" data-db="${esc(s.name)}" style="margin:0"${allDb ? ' disabled' : ''}>
+        <option value=""${dbMode(s.name, curPerms) === '' ? ' selected' : ''}>无权限</option>
+        <option value="read"${dbMode(s.name, curPerms) === 'read' ? ' selected' : ''}>只读</option>
+        <option value="write"${dbMode(s.name, curPerms) === 'write' ? ' selected' : ''}>读写</option>
+      </select></td>
+    </tr>`).join('');
   showModal(cur ? `编辑用户：${esc(name)}` : '新增用户', `
     <label>用户名</label>
     <input type="text" id="u-name" value="${esc(cur ? cur.userName : '')}" placeholder="例如 ops" style="margin-bottom:10px">
@@ -860,16 +885,35 @@ function editUser(name) {
       <input type="checkbox" id="u-enabled"${!cur || cur.enabled ? ' checked' : ''}><span>允许登录</span>
     </label>
     <label>页签权限</label>
-    <div style="margin-bottom:10px">${checks || '<span class="text-muted">（无可授权限）</span>'}</div>
+    <div style="margin-bottom:12px">${checks || '<span class="text-muted">（无可授权限）</span>'}</div>
+    <label>数据源权限（决定这个账号能查/改哪些数据源）</label>
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0 8px;font-size:13px">
+      <input type="checkbox" id="u-db-all"${allDb ? ' checked' : ''} onclick="toggleDbAll(this.checked)">
+      <span>全部数据源（读 + 写）</span>
+    </label>
+    ${dbRows
+      ? `<table class="config-table" style="margin-bottom:10px"><thead><tr><th>数据源</th><th style="width:150px">权限</th></tr></thead><tbody>${dbRows}</tbody></table>`
+      : '<div class="form-desc" style="margin-bottom:10px">（还没有数据源；先去概览页新建）</div>'}
     <label>备注</label>
     <input type="text" id="u-remark" value="${esc(cur ? cur.remark : '')}" placeholder="可空">
   `, '保存', async () => {
+    const dbPerms = [];
+    document.querySelectorAll('.f-db').forEach(sel => {
+      const db = sel.getAttribute('data-db');
+      if (!db) return;
+      if (sel.value === 'read') dbPerms.push('db:read:' + db);
+      if (sel.value === 'write') dbPerms.push('db:write:' + db);
+    });
     const body = {
       name: $('u-name').value.trim(),
       originalName: cur ? cur.userName : '',
       password: $('u-pass').value,
       enabled: $('u-enabled').checked,
-      permissions: [...document.querySelectorAll('.f-perm')].filter(c => c.checked).map(c => c.value),
+      permissions: [
+        ...[...document.querySelectorAll('.f-perm')].filter(c => c.checked).map(c => c.value),
+        ...($('u-db-all') && $('u-db-all').checked ? ['db:*'] : []),
+        ...dbPerms,
+      ],
       remark: $('u-remark').value.trim(),
     };
     if (!body.name) { toast('用户名不能为空', 'error'); return; }
@@ -880,6 +924,11 @@ function editUser(name) {
       await loadUsers(true);
     } catch (e) { toast(e.message, 'error'); }
   });
+}
+
+/** 「全部数据源」勾选时禁/启单源选择（避免两种表达冲突）。 */
+function toggleDbAll(checked) {
+  document.querySelectorAll('.f-db').forEach(sel => { sel.disabled = checked; });
 }
 
 async function removeUser(name) {
@@ -916,7 +965,7 @@ async function loadAudit() {
     html += `<div class="empty-state"><div class="empty-icon">📋</div><div>暂无记录（项目侧调用 /Db 后在此显示）</div></div>`;
   } else {
     html += `<table class="svc-table"><thead><tr>
-      <th>时间</th><th>数据源</th><th>操作</th><th>结果</th><th>耗时</th><th>行数</th><th>令牌</th><th>SQL（备注 / 错误）</th>
+      <th>时间</th><th>用户</th><th>数据源</th><th>操作</th><th>结果</th><th>耗时</th><th>行数</th><th>令牌</th><th>SQL（备注 / 错误）</th>
       </tr></thead><tbody>`;
     for (const r of rows) {
       const sqlCell = r.sql
@@ -924,8 +973,13 @@ async function loadAudit() {
         : '<div class="audit-sql text-muted">—</div>';
       const noteCell = r.note ? `<div class="audit-note">备注：${esc(r.note)}</div>` : '';
       const errCell = r.error ? `<div class="audit-err">错误：${esc(r.error)}</div>` : '';
+      // 用户为空 = 旧式调用（只带数据源令牌，项目侧直连）
+      const userCell = r.user
+        ? `<span class="badge badge-gray">${esc(r.user)}</span>`
+        : '<span class="text-muted">（数据源令牌）</span>';
       html += `<tr>
         <td class="font-mono" style="white-space:nowrap">${esc(r.at)}</td>
+        <td style="white-space:nowrap">${userCell}</td>
         <td>${esc(r.db)}</td>
         <td>${esc(r.op)}</td>
         <td>${r.ok ? '<span class="badge badge-green">成功</span>' : '<span class="badge badge-red">失败</span>'}</td>
@@ -1021,6 +1075,23 @@ function loadSettings() {
   </div>
 
   <div class="card glass-card">
+    <h2>🖥 桌面工具
+      <span style="margin-left:auto"><button class="btn btn-ghost btn-sm" onclick="loadToolHub()">刷新</button></span>
+    </h2>
+    <div class="form-desc" style="margin-bottom:10px">
+      上传 <span class="font-mono">pek-rdbproxy-tool.exe</span> 的新版本后，桌面工具「关于」页点「检测更新」就能发现自己有新版本并<b>一键自我升级</b>；
+      同一版本的旧包会被覆盖，工具端会先校验大小与 SHA-256 再替换自己。
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <input type="file" id="tool-file" accept=".exe,application/octet-stream" style="max-width:300px">
+      <input type="text" id="tool-ver" placeholder="版本（留空=从文件名取）" style="max-width:180px">
+      <input type="text" id="tool-notes" placeholder="更新说明（可选）" style="max-width:280px">
+      <button class="btn btn-primary btn-sm" onclick="uploadTool()">上传新版本</button>
+    </div>
+    <div id="tool-body"><div class="form-desc">正在读取…</div></div>
+  </div>
+
+  <div class="card glass-card">
     <h2>🧩 驱动组件</h2>
     <div class="form-desc" style="margin-bottom:10px">
       本程序<b>内置</b> SQLite 与 <span class="font-mono" id="drv-builtin">—</span>；其余库类型（Oracle / 达梦 / MongoDB / HANA / Firebird / ODBC …）
@@ -1042,6 +1113,61 @@ function loadSettings() {
   </div>`;
   $('panel-settings').innerHTML = html;
   loadDrivers();
+  loadToolHub();
+}
+
+/* ── 桌面工具包托管（工具自升级） ──────────────────── */
+
+async function loadToolHub() {
+  const box = $('tool-body');
+  if (!box) return;
+  box.innerHTML = '<div class="form-desc">正在读取…</div>';
+  let d = null;
+  try {
+    d = unwrap(await api('/api/tool'));
+  } catch (e) {
+    box.innerHTML = `<div class="err">读取失败：${esc(e.message)}</div>`;
+    return;
+  }
+  if (!d || !d.present) {
+    box.innerHTML = '<div class="form-desc">还没有上传过桌面工具（工具仍可正常使用，只是无法自升级）。</div>';
+    return;
+  }
+  const url = location.origin + (d.downloadUrl || '');
+  box.innerHTML = `<table class="config-table">
+    <tr><td>托管版本</td><td class="font-mono">v${esc(d.version)}</td><td>上传时间 ${esc(d.uploadedAt || '—')}</td></tr>
+    <tr><td>大小</td><td class="font-mono">${(d.size / 1024 / 1024).toFixed(2)} MB</td><td>${esc(d.file || '')}</td></tr>
+    <tr><td>SHA-256</td><td colspan="2" class="font-mono" style="word-break:break-all;font-size:11px">${esc(d.sha256 || '—')}</td></tr>
+    <tr><td>更新说明</td><td colspan="2">${esc(d.notes || '（无）')}</td></tr>
+    <tr><td>下载地址</td><td colspan="2"><a class="font-mono" href="${esc(url)}" target="_blank" rel="noreferrer">${esc(url)}</a></td></tr>
+  </table>`;
+}
+
+/** 从文件名里提取版本号（如 `pek-rdbproxy-tool-0.1.30.exe` → `0.1.30`）。 */
+function versionFromName(name) {
+  const m = /(\d+\.\d+(?:\.\d+)*(?:-[0-9A-Za-z.]+)?)/.exec(name || '');
+  return m ? m[1] : '';
+}
+
+async function uploadTool() {
+  const inp = $('tool-file');
+  if (!inp || !inp.files || !inp.files.length) { toast('请先选择工具程序文件', 'error'); return; }
+  const f = inp.files[0];
+  const version = ($('tool-ver').value.trim() || versionFromName(f.name)).replace(/^v/i, '');
+  if (!version) { toast('请填写版本号（如 0.1.30）', 'error'); return; }
+  const notes = $('tool-notes').value.trim();
+  if (!confirm(`上传工具 v${version}（${(f.size / 1024 / 1024).toFixed(2)} MB）？`)) return;
+  try {
+    const headers = { 'Content-Type': 'application/octet-stream' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const r = await fetch('/api/tool/upload/' + encodeURIComponent(version) +
+      (notes ? '?notes=' + encodeURIComponent(notes) : ''), { method: 'POST', headers, body: f });
+    const el = r.headers.get('X-Elapsed-Ms'); if (el) setSrvElapsed(el);
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error((j && j.message) || '上传失败');
+    toast(`工具 v${j.data.version} 已上传`, 'success');
+    loadToolHub();
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 /* ── 驱动组件（按需下载） ───────────────────────────── */

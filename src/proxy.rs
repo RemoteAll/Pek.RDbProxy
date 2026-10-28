@@ -138,6 +138,8 @@ pub struct AuditEntry {
     pub error: String,
     /// 成功时的备注（如字段策略拦截/脱敏提示）——**不占用** `error`，避免面板里把 SQL 盖掉
     pub note: String,
+    /// 发起者（登录用户名；空 = 只带了数据源令牌的旧式调用）
+    pub user: String,
 }
 
 impl AuditEntry {
@@ -146,7 +148,7 @@ impl AuditEntry {
         json!({
             "at": self.at, "db": self.db, "op": self.op, "ok": self.ok,
             "micros": self.micros, "rows": self.rows, "token": self.token,
-            "sql": self.sql, "error": self.error, "note": self.note,
+            "sql": self.sql, "error": self.error, "note": self.note, "user": self.user,
         })
     }
 }
@@ -196,6 +198,19 @@ pub struct Proxy {
 
 /// 监听地址热重绑钩子：入参为新的服务端配置，返回实际监听地址。
 pub type RebindHook = Arc<dyn Fn(&ServerSection) -> Result<String, String> + Send + Sync>;
+
+/// 调用者身份（用户登录令牌解析结果）。
+///
+/// `None`（不传 Bearer）= 旧式项目侧调用：只带数据源令牌，行为与以前完全一致；
+/// `Some` 时按用户的数据源权限放行（`db:*` / `db:read:<源>` / `db:write:<源>`）。
+pub struct Caller {
+    /// 用户名
+    pub user: String,
+    /// 权限键（页签 + 数据源）
+    pub perms: Vec<String>,
+    /// 内置管理员（内置账号/本机免登录）直接放行
+    pub builtin: bool,
+}
 
 impl Proxy {
     /// 按配置构建（单个数据源连不上不影响整体启动，错误在面板可见）。
@@ -705,13 +720,25 @@ impl Proxy {
         .map(|_| ())
     }
 
-    /// 处理 `/Db/*` 协议请求（鉴权走各数据源令牌）。
+    /// 处理 `/Db/*` 协议请求（数据源令牌 + **可选的用户令牌**）。
+    ///
+    /// - `caller = None`：旧式项目侧调用（只带数据源令牌），行为与以前完全一致；
+    /// - `caller = Some`：按用户的数据源权限放行（`db:*` / `db:read:<源>` / `db:write:<源>`），
+    ///   并把用户名写进审计，面板就能看出“谁在查”。
     ///
     /// 响应格式**对齐 C# `DbController`**：成功裸 `{data:…}`（或 `{DbType,Version}` / 数组），
     /// 失败 `{code, msg}`（`DbClient::parse_envelope` 靠 code 非 0 抛 msg）。
-    pub fn handle_db(&self, action: &str, method: &str, body: &[u8], query: &str) -> HttpResponse {
+    pub fn handle_db(
+        &self,
+        action: &str,
+        method: &str,
+        body: &[u8],
+        query: &str,
+        caller: Option<&Caller>,
+    ) -> HttpResponse {
         let action = action.trim_end_matches('/');
         let started = Instant::now();
+        let user = caller.map(|c| c.user.as_str()).unwrap_or_default();
         let parsed = parse_json(body);
 
         let (db_name, token, sql, parameters) = if method == "POST" {
@@ -740,17 +767,64 @@ impl Proxy {
             } else {
                 format!("数据源不存在：{db_name}（可用：{}）", names.join(", "))
             };
-            self.record(&db_name, action, &token, &sql, started, false, 0, message.clone());
+            self.record(&db_name, action, &token, &sql, started, false, 0, message.clone(), user);
             return db_error(404, &message);
         };
 
         if let Err(e) = self.validate_token(&token, &source.name) {
-            self.record(&source.name, action, &token, &sql, started, false, 0, e.clone());
+            self.record(&source.name, action, &token, &sql, started, false, 0, e.clone(), user);
             return db_error(401, &e);
         }
+
+        // 用户权限闸门（数据源令牌已是第一道关；这里再加“这个人能碰哪些数据源”）
+        if let Some(caller) = caller
+            && !caller.builtin
+        {
+            let writing = match action {
+                "Execute" | "InsertAndGetIdentity" => true,
+                "Query" => !is_read_only_sql(&sql),
+                _ => false,
+            };
+            let read_ok = caller.perms.iter().any(|p| {
+                p == crate::admin::PERM_DB_ALL
+                    || p == &crate::admin::db_read_key(&source.name)
+                    || p == &crate::admin::db_write_key(&source.name)
+            });
+            let write_ok = caller.perms.iter().any(|p| {
+                p == crate::admin::PERM_DB_ALL || p == &crate::admin::db_write_key(&source.name)
+            });
+            let denial = if !read_ok {
+                Some(format!(
+                    "用户 {} 没有数据源 {} 的访问权限（在面板「用户」里授予 db:read:{} 或 db:write:{}）",
+                    caller.user, source.name, source.name, source.name
+                ))
+            } else if writing && !write_ok {
+                Some(format!(
+                    "用户 {} 对数据源 {} 只有读权限（写操作需要 db:write:{}）",
+                    caller.user, source.name, source.name
+                ))
+            } else {
+                None
+            };
+            if let Some(message) = denial {
+                self.record(
+                    &source.name,
+                    action,
+                    &token,
+                    &sql,
+                    started,
+                    false,
+                    0,
+                    message.clone(),
+                    user,
+                );
+                return db_error(403, &message);
+            }
+        }
+
         let Some(dal) = source.dal.as_ref() else {
             let message = format!("数据源 {} 不可用：{}", source.name, source.open_error);
-            self.record(&source.name, action, &token, &sql, started, false, 0, message.clone());
+            self.record(&source.name, action, &token, &sql, started, false, 0, message.clone(), user);
             return db_error(503, &message);
         };
 
@@ -763,7 +837,7 @@ impl Proxy {
             };
             if writing {
                 let message = format!("数据源 {} 为只读模式，已拒绝写操作", source.name);
-                self.record(&source.name, action, &token, &sql, started, false, 0, message.clone());
+                self.record(&source.name, action, &token, &sql, started, false, 0, message.clone(), user);
                 return db_error(403, &message);
             }
         }
@@ -772,13 +846,13 @@ impl Proxy {
         match (method, action) {
             ("POST", "Login") => {
                 let info = service.login_info(dal);
-                self.record(&source.name, action, &token, "", started, true, 0, String::new());
+                self.record(&source.name, action, &token, "", started, true, 0, String::new(), user);
                 db_ok(json!({ "DbType": info.db_type, "Version": info.version }))
             }
             ("POST", "Query") => match service.query(dal, &sql, parameters.as_ref()) {
                 Ok(set) => {
                     let (filtered, note) = self.apply_field_policy(&source.name, set);
-                    self.record(&source.name, action, &token, &sql, started, true, -1, note);
+                    self.record(&source.name, action, &token, &sql, started, true, -1, note, user);
                     HttpResponse::bytes(
                         200,
                         "application/octet-stream",
@@ -786,28 +860,28 @@ impl Proxy {
                     )
                 }
                 Err(e) => {
-                    self.record(&source.name, action, &token, &sql, started, false, 0, e.to_string());
+                    self.record(&source.name, action, &token, &sql, started, false, 0, e.to_string(), user);
                     db_error(500, &e.to_string())
                 }
             },
             ("POST", "Execute") => match service.execute(dal, &sql, parameters.as_ref()) {
                 Ok(n) => {
-                    self.record(&source.name, action, &token, &sql, started, true, n as i64, String::new());
+                    self.record(&source.name, action, &token, &sql, started, true, n as i64, String::new(), user);
                     db_ok(json!({ "data": n }))
                 }
                 Err(e) => {
-                    self.record(&source.name, action, &token, &sql, started, false, 0, e.to_string());
+                    self.record(&source.name, action, &token, &sql, started, false, 0, e.to_string(), user);
                     db_error(500, &e.to_string())
                 }
             },
             ("POST", "InsertAndGetIdentity") => {
                 match service.insert_and_get_identity(dal, &sql, parameters.as_ref()) {
                     Ok(id) => {
-                        self.record(&source.name, action, &token, &sql, started, true, 1, String::new());
+                        self.record(&source.name, action, &token, &sql, started, true, 1, String::new(), user);
                         db_ok(json!({ "data": id }))
                     }
                     Err(e) => {
-                        self.record(&source.name, action, &token, &sql, started, false, 0, e.to_string());
+                        self.record(&source.name, action, &token, &sql, started, false, 0, e.to_string(), user);
                         db_error(500, &e.to_string())
                     }
                 }
@@ -817,11 +891,11 @@ impl Proxy {
                 let table = query.get("tableName").cloned().unwrap_or_default();
                 match service.query_count(dal, &table) {
                     Ok(n) => {
-                        self.record(&source.name, action, &token, "", started, true, n, String::new());
+                        self.record(&source.name, action, &token, "", started, true, n, String::new(), user);
                         db_ok(json!({ "data": n }))
                     }
                     Err(e) => {
-                        self.record(&source.name, action, &token, "", started, false, 0, e.to_string());
+                        self.record(&source.name, action, &token, "", started, false, 0, e.to_string(), user);
                         db_error(500, &e.to_string())
                     }
                 }
@@ -839,11 +913,11 @@ impl Proxy {
                             json!({ "Name": t.effective_table_name(), "Columns": columns })
                         })
                         .collect();
-                    self.record(&source.name, action, &token, "", started, true, -1, String::new());
+                    self.record(&source.name, action, &token, "", started, true, -1, String::new(), user);
                     db_ok(Value::Array(list))
                 }
                 Err(e) => {
-                    self.record(&source.name, action, &token, "", started, false, 0, e.to_string());
+                    self.record(&source.name, action, &token, "", started, false, 0, e.to_string(), user);
                     db_error(500, &e.to_string())
                 }
             },
@@ -957,6 +1031,7 @@ impl Proxy {
         ok: bool,
         rows: i64,
         message: String,
+        user: &str,
     ) {
         // 同一入参两种语义：成功时是「备注」（如字段策略拦截），失败时才是「错误」。
         // 分开存，面板才能同时看到「实际 SQL」与「备注/错误」。
@@ -988,6 +1063,7 @@ impl Proxy {
             sql: summary.clone(),
             error: error.clone(),
             note: note.clone(),
+            user: user.to_string(),
         };
         if let Ok(mut items) = self.audit.lock() {
             if items.len() == AUDIT_CAPACITY {
@@ -1353,7 +1429,8 @@ fn db_ok(data: Value) -> HttpResponse {
 }
 
 /// 协议错误响应（`{code, msg}`，`DbClient` 靠 code 非 0 抛 msg）。
-fn db_error(status: u16, message: &str) -> HttpResponse {
+/// 失败信封 `{code,msg}`（对齐 C# `DbController`；**不是**面板的 `{ok,data}`）。
+pub fn db_error(status: u16, message: &str) -> HttpResponse {
     HttpResponse::json(status, json!({ "code": status, "msg": message }).to_string())
 }
 

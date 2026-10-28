@@ -151,6 +151,10 @@ html{overflow-anchor:none}
 .modal-box h3{font-size:17px;font-weight:700;margin-bottom:10px}
 .modal-box p{font-size:13px;color:var(--text-secondary);margin-bottom:22px;line-height:1.6}
 .modal-box .modal-actions{display:flex;gap:10px;justify-content:flex-end}
+/* 长内容弹窗（用户/数据源权限等）：内容区滚动，按钮始终可见（窗口矮时也能点到「保存」） */
+.modal-box{max-height:90vh;display:flex;flex-direction:column}
+.modal-box #modal-body{flex:1 1 auto;min-height:0;overflow-y:auto}
+.modal-box .modal-actions,.modal-box h3{flex:none}
 /* 宽版弹窗（文件在线编辑等大内容场景）：占满视口大部分，编辑器自适应填充 */
 .modal-box.modal-wide{max-width:min(1180px,95vw);width:min(1180px,95vw);height:min(880px,90vh);display:flex;flex-direction:column;padding:20px 22px}
 .modal-box.modal-wide #modal-body{flex:1;min-height:0;display:flex;flex-direction:column;margin-bottom:14px}

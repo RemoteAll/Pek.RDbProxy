@@ -303,6 +303,7 @@ function renderAll() {
   renderSide();
   renderConnBar();
   renderHistory();
+  renderUser();
 }
 
 /* ── 选择 / 登录 ──────────────────────────────── */
@@ -710,6 +711,9 @@ $('btn-check').addEventListener('click', runSelfCheck);
 $('btn-clear-history').addEventListener('click', clearHistory);
 $('btn-export').addEventListener('click', exportWorkspace);
 $('btn-import').addEventListener('click', importWorkspace);
+$('btn-user-login').addEventListener('click', openUserLogin);
+$('btn-check-update').addEventListener('click', checkUpdate);
+$('btn-do-update').addEventListener('click', doUpdate);
 
 $('btn-copy-csv').addEventListener('click', () => {
   const csv = resultToCsv();
@@ -805,6 +809,125 @@ $('dlg-body').addEventListener('keydown', (event) => {
   }
 });
 
+/* ── 登录代理（按用户授权 + 审计可追溯） ──────── */
+
+let session = null;   // { server, user, builtin, permissions, summary }
+
+/** 默认代理地址：已登录 > 当前连接 > 临时连接串。 */
+function sessionServer() {
+  if (session && session.server) return session.server;
+  const saved = currentId() ? connectionOf(currentId()) : null;
+  if (saved && saved.server) return saved.server;
+  const raw = currentConn();
+  if (raw) {
+    const hit = /Server=([^;]*)/i.exec(raw);
+    if (hit) return hit[1].trim();
+  }
+  return '';
+}
+
+function renderUser() {
+  const chip = $('user-chip');
+  const btn = $('btn-user-login');
+  if (!chip || !btn) return;
+  if (session && session.user) {
+    chip.textContent = `${session.user}${session.builtin ? '（管理员）' : ''}`;
+    chip.className = 'health ok';
+    chip.title = `已登录 ${session.server}\n权限：${session.summary}`;
+    btn.textContent = '退出登录';
+  } else {
+    chip.textContent = '未登录（只带数据源令牌）';
+    chip.className = 'health none';
+    chip.title = '未登录时只能按数据源令牌鉴权；登录后审计能看出是谁在查，并按人授权。';
+    btn.textContent = '登录代理…';
+  }
+  const cur = $('update-current');
+  if (cur) cur.textContent = session && session.user ? `（已登录：${session.user}）` : '';
+}
+
+async function loadSession() {
+  const view = await guard(null, () => call('user_session'));
+  session = view && view.user ? view : null;
+  renderUser();
+}
+
+function openUserLogin() {
+  if (session && session.user) {
+    if (!confirm(`退出登录 ${session.user}？退出后只带数据源令牌。`)) return;
+    guard($('btn-user-login'), async () => {
+      await call('user_logout');
+      session = null;
+      renderUser();
+      toast('已退出登录');
+    });
+    return;
+  }
+  const server = sessionServer();
+  openDialog({
+    title: '登录代理',
+    body: `
+      <label>代理地址</label>
+      <input id="ul-server" placeholder="http://127.0.0.1:5599" value="${esc(server)}">
+      <label>用户名</label>
+      <input id="ul-user" placeholder="面板账号（admin 或面板「用户」里建的账号）">
+      <label>密码</label>
+      <input id="ul-pass" type="password" placeholder="密码">
+      <div class="hint">登录后每个请求都带用户令牌：代理按<b>你的数据源权限</b>放行，审计里能看出是谁在查；
+      令牌只留在这台机器的进程内存里，不落盘、不下发页面。</div>`,
+    okText: '登录',
+    ok: async () => {
+      const server = $('ul-server').value.trim();
+      const user = $('ul-user').value.trim();
+      const password = $('ul-pass').value;
+      if (!server || !user || !password) { toast('三项都要填', 'error'); return false; }
+      const view = await guard(null, () => call('user_login', { server, user, password }));
+      if (!view) return false;
+      session = view;
+      renderUser();
+      if (view.newPassword) {
+        toast(`登录成功；代理已把默认弱口令改为随机密码，新密码：${view.newPassword}（请立刻记下）`);
+      } else {
+        toast(`已登录：${view.user}（${view.summary}）`);
+      }
+      return true;
+    },
+  });
+}
+
+/* ── 检查更新（代理托管工具包） ──────────────── */
+
+let pendingUpdate = null;
+
+async function checkUpdate() {
+  const server = $('up-server').value.trim() || sessionServer();
+  if (!server) { toast('先选一个连接，或在输入框填代理地址', 'error'); return; }
+  const info = await guard($('btn-check-update'), () => call('update_check', { server }));
+  if (!info) return;
+  pendingUpdate = info;
+  $('btn-do-update').disabled = !info.newer;
+  const box = $('update-body');
+  if (!info.present) {
+    box.innerHTML = '代理上还没有上传桌面工具（面板「设置 → 桌面工具」上传后，这里就能一键升级）。';
+    return;
+  }
+  box.innerHTML = `<table class="info">
+    <tr><td>当前版本</td><td>v${esc(info.current)}</td></tr>
+    <tr><td>代理上版本</td><td>v${esc(info.latest)}${info.newer
+      ? ' <span class="badge ok">有新版本</span>'
+      : ' <span class="badge">已是最新</span>'} </td></tr>
+    <tr><td>大小</td><td>${(info.size / 1024 / 1024).toFixed(2)} MB</td></tr>
+    <tr><td>上传时间</td><td>${esc(info.uploadedAt || '—')}</td></tr>
+    <tr><td>更新说明</td><td>${esc(info.notes || '（无）')}</td></tr>
+  </table>`;
+}
+
+async function doUpdate() {
+  if (!pendingUpdate || !pendingUpdate.newer) return;
+  if (!confirm(`升级到 v${pendingUpdate.latest}？下载校验后本工具会自动替换并重启。`)) return;
+  const r = await guard($('btn-do-update'), () => call('update_install', { server: pendingUpdate.server }));
+  if (r && r.restarting) toast(`已升级到 v${r.to}，正在重启…`);
+}
+
 /* ── 启动 ─────────────────────────────────────── */
 
 async function loadInfo() {
@@ -830,4 +953,6 @@ async function loadInfo() {
   } catch (e) { /* ignore */ }
   renderAll();
   restoreDraft();
+  await loadSession();
+  renderConnBar();
 })();

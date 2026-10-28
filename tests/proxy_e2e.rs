@@ -393,10 +393,253 @@ fn default_account_is_created_even_though_admin_is_weak() {
 }
 
 /// 从 JSON 文本里取字符串字段（避免为测试引入 serde_json 依赖链以外的解析）。
+/// 极简 HTTP 请求（二进制请求体，返回状态码与正文字节）。
+fn http_bytes(
+    addr: &str,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    content_type: &str,
+    body: &[u8],
+) -> (u16, Vec<u8>) {
+    let mut stream = std::net::TcpStream::connect(addr).expect("连接");
+    stream.set_read_timeout(Some(Duration::from_secs(20))).ok();
+    let auth = bearer
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default();
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\n{auth}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).expect("发送头");
+    stream.write_all(body).expect("发送体");
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).expect("接收");
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4)
+        .unwrap_or(0);
+    let head_text = String::from_utf8_lossy(&raw[..split]).to_string();
+    let status = head_text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or(0);
+    (status, raw[split..].to_vec())
+}
+
 fn json_field(body: &str, key: &str) -> String {
     let needle = format!("\"{key}\":\"");
     body.split_once(&needle)
         .and_then(|(_, rest)| rest.split_once('"'))
         .map(|(value, _)| value.to_string())
         .unwrap_or_default()
+}
+
+/// 用面板账号登录，取 JWT。
+fn login_token(addr: &str, user: &str, password: &str) -> String {
+    let body = format!(r#"{{"user":"{user}","password":"{password}"}}"#);
+    let (status, text) = http(addr, "POST", "/api/login", None, Some(&body));
+    assert_eq!(status, 200, "{user} 应能登录：{text}");
+    let token = json_field(&text, "token");
+    assert_eq!(token.split('.').count(), 3, "应是 JWT：{token}");
+    token
+}
+
+/// 工具包托管：上传（需 `settings` 权限）→ 列版本（免登录只读）→ 下载（免登录）→ 内容与 SHA-256 一致。
+///
+/// 这条链就是「代理上升级工具包 → 工具自己检测并升级」的底座：格式、校验、路由一次盖完。
+#[test]
+fn tool_package_upload_and_download() {
+    let base = temp_dir("toolhub");
+    let hash = pek_rdbproxy::proxy::hash_password("pass-123");
+    let proxy = build_proxy(&base, false, &hash);
+    let addr = serve(Arc::clone(&proxy));
+    let admin = login_token(&addr, "admin", "pass-123");
+
+    // 假 PE：`MZ` 魔数 + 填充（`is_executable` 只看魔数）
+    let mut exe = vec![b'M', b'Z'];
+    exe.extend(std::iter::repeat_n(0u8, 4096));
+    let digest = dhrust::sign::sha256_hex(&exe);
+
+    // 注意：本用例的鉴权级别是 `LocalOnly`，回环请求按「内置管理员」放行（本机能改配置就能管理），
+    // 所以“未登录上传被拒”要在 `Full` 级别下才成立；这里用**普通账号**来验权限闸门。
+    let payload =
+        r#"{"name":"ops","password":"p-ops","enabled":true,"permissions":["overview"],"remark":"e2e"}"#;
+    let (status, body) = http(&addr, "POST", "/api/user", Some(&admin), Some(payload));
+    assert_eq!(status, 200, "建号应成功：{body}");
+    let ops = login_token(&addr, "ops", "p-ops");
+    let (status, _) = http_bytes(
+        &addr,
+        "POST",
+        "/api/tool/upload/0.9.9",
+        Some(&ops),
+        "application/octet-stream",
+        &exe,
+    );
+    assert_eq!(status, 403, "无 settings 权限应 403，实际 {status}");
+
+    // 非可执行内容应 400
+    let (status, body) = http_bytes(
+        &addr,
+        "POST",
+        "/api/tool/upload/0.9.8",
+        Some(&admin),
+        "application/octet-stream",
+        b"not-a-program",
+    );
+    assert_eq!(
+        status,
+        400,
+        "非可执行应 400：{}",
+        String::from_utf8_lossy(&body)
+    );
+
+    // 正常上传
+    let (status, body) = http_bytes(
+        &addr,
+        "POST",
+        "/api/tool/upload/0.9.9?notes=e2e%20%E5%B7%A5%E5%85%B7",
+        Some(&admin),
+        "application/octet-stream",
+        &exe,
+    );
+    assert_eq!(
+        status,
+        200,
+        "上传应成功：{}",
+        String::from_utf8_lossy(&body)
+    );
+    let text = String::from_utf8_lossy(&body).to_string();
+    assert!(text.contains("\"version\":\"0.9.9\""), "{text}");
+    assert!(text.contains(&digest), "应回传 SHA-256：{text}");
+
+    // 免登录查版本（工具端检查更新用）
+    let (status, body) = http(&addr, "GET", "/api/tool", None, None);
+    assert_eq!(status, 200, "免登录应可查版本：{body}");
+    assert!(body.contains("\"present\":true"), "{body}");
+    assert!(body.contains("\"version\":\"0.9.9\""), "{body}");
+
+    // 免登录下载（latest + 指定文件名两种）
+    for file in ["latest", "pek-rdbproxy-tool-0.9.9"] {
+        let (status, bytes) = http_bytes(
+            &addr,
+            "GET",
+            &format!("/api/tool/download/{file}"),
+            None,
+            "application/octet-stream",
+            b"",
+        );
+        assert_eq!(status, 200, "下载 {file} 应成功（{} 字节）", bytes.len());
+        assert_eq!(bytes, exe, "下载内容应与上传一致（{file}）");
+        assert_eq!(dhrust::sign::sha256_hex(&bytes), digest, "SHA-256 应一致");
+    }
+
+    // 不存在的包 → 404
+    let (status, _) = http_bytes(
+        &addr,
+        "GET",
+        "/api/tool/download/pek-rdbproxy-tool-9.9.9",
+        None,
+        "application/octet-stream",
+        b"",
+    );
+    assert_eq!(status, 404, "不存在的版本应 404");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// 按用户授权：`db:read:<源>` 只能查、`db:write:<源>` 才能写，没有 `db:` 权限一律 403；
+/// 审计要能看出「是谁在查」；带了无效令牌**不能**静默降级成旧式调用。
+#[test]
+fn user_permissions_gate_datasource_access() {
+    let base = temp_dir("user-perm");
+    let hash = pek_rdbproxy::proxy::hash_password("pass-123");
+    let proxy = build_proxy(&base, false, &hash);
+    let addr = serve(Arc::clone(&proxy));
+    let admin = login_token(&addr, "admin", "pass-123");
+
+    // 三个账号：只读 / 读写 / 无数据源权限
+    for (user, perms) in [
+        ("reader", r#"["overview","db:read:demo"]"#),
+        ("writer", r#"["overview","db:write:demo"]"#),
+        ("nobody", r#"["overview"]"#),
+    ] {
+        let payload = format!(
+            r#"{{"name":"{user}","password":"p-{user}","enabled":true,"permissions":{perms},"remark":"e2e"}}"#
+        );
+        let (status, body) = http(&addr, "POST", "/api/user", Some(&admin), Some(&payload));
+        assert_eq!(status, 200, "创建用户 {user} 应成功：{body}");
+    }
+
+    let reader = login_token(&addr, "reader", "p-reader");
+    let writer = login_token(&addr, "writer", "p-writer");
+    let nobody = login_token(&addr, "nobody", "p-nobody");
+
+    let target = format!("http://{addr}");
+
+    // 读权限：查询通过
+    DbClient::new(&target, "demo", Some("tk-test-123456"))
+        .with_bearer(&reader)
+        .query_rowset("SELECT Id FROM t", None)
+        .expect("db:read:demo 应能查询");
+
+    // 读权限：写被拒，且文案说清缺什么
+    let err = DbClient::new(&target, "demo", Some("tk-test-123456"))
+        .with_bearer(&reader)
+        .execute("INSERT INTO t (Id, Name) VALUES (9, 'x')", None)
+        .expect_err("只有读权限应拒绝写入");
+    assert!(
+        err.to_string().contains("只有读权限"),
+        "错误信息应说明只有读权限：{err}"
+    );
+
+    // 读写权限：写成功
+    DbClient::new(&target, "demo", Some("tk-test-123456"))
+        .with_bearer(&writer)
+        .execute("INSERT INTO t (Id, Name) VALUES (3, 'w')", None)
+        .expect("db:write:demo 应能写入");
+
+    // 无数据源权限：查询也拒绝
+    let err = DbClient::new(&target, "demo", Some("tk-test-123456"))
+        .with_bearer(&nobody)
+        .query_rowset("SELECT Id FROM t", None)
+        .expect_err("没有数据源权限应被拒绝");
+    assert!(
+        err.to_string().contains("没有数据源") && err.to_string().contains("db:read:demo"),
+        "错误信息应指明数据源与所需权限：{err}"
+    );
+
+    // 无效令牌：不静默降级（否则「去掉令牌就绕过用户限制」）
+    assert!(
+        DbClient::new(&target, "demo", Some("tk-test-123456"))
+            .with_bearer("not-a-jwt")
+            .login()
+            .is_err(),
+        "无效用户令牌应 401"
+    );
+
+    // 旧式调用（不带用户令牌）保持原行为
+    DbClient::new(&target, "demo", Some("tk-test-123456"))
+        .login()
+        .expect("不带用户令牌应仍按数据源令牌放行");
+
+    // 审计：读成功 / 写被拒 都要记到人
+    let (status, body) = http(&addr, "GET", "/api/audit?n=50", Some(&admin), None);
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("\"user\":\"reader\""),
+        "审计应记录发起者：{body}"
+    );
+    assert!(
+        body.contains("\"user\":\"nobody\""),
+        "被拒的请求也要能看出是谁：{body}"
+    );
+    assert!(
+        body.contains("\"user\":\"\""),
+        "旧式调用 user 为空（面板显示「数据源令牌」）：{body}"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
 }

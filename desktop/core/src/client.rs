@@ -25,6 +25,23 @@ pub struct Target {
     pub db: String,
     /// 数据源令牌
     pub token: String,
+    /// 用户令牌（登录后拿到；有则按用户身份鉴权，审计里能看出是谁）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bearer: Option<String>,
+}
+
+/// 归一化代理地址（登录 / 检查更新时用）：去首尾空白与末尾 `/`，缺协议时补 `http://`。
+pub fn normalize_server(raw: &str) -> Result<String, String> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return Err("代理地址不能为空（例：http://127.0.0.1:5599）".to_string());
+    }
+    let mut server = text.trim_end_matches('/').to_string();
+    let lower = server.to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        server = format!("http://{server}");
+    }
+    Ok(server)
 }
 
 impl Target {
@@ -65,7 +82,18 @@ impl Target {
             .map(str::trim)
             .unwrap_or_default()
             .to_string();
-        Ok(Self { server, db, token })
+        Ok(Self {
+            server,
+            db,
+            token,
+            bearer: None,
+        })
+    }
+
+    /// 带上用户令牌（登录后拿到的 JWT）；`None` = 只带数据源令牌（旧式调用）。
+    pub fn with_bearer(mut self, bearer: Option<String>) -> Self {
+        self.bearer = bearer;
+        self
     }
 
     /// 拼回项目侧连接串。
@@ -88,10 +116,13 @@ impl Target {
         format!("{} · {} · 令牌 {}", self.server, self.db, token)
     }
 
-    /// 构造协议客户端（统一 UA + 超时）。
+    /// 构造协议客户端（统一 UA + 超时 + 可选用户令牌）。
     pub(crate) fn client(&self) -> DbClient {
         let mut client = DbClient::new(&self.server, &self.db, Some(&self.token))
             .with_user_agent(USER_AGENT);
+        if let Some(bearer) = self.bearer.as_deref() {
+            client = client.with_bearer(bearer);
+        }
         client.timeout = DEFAULT_TIMEOUT;
         client
     }
@@ -311,6 +342,7 @@ mod tests {
             server: "http://127.0.0.1:5599".into(),
             db: "demo".into(),
             token: "tk-secret-123456".into(),
+            bearer: None,
         };
         let masked = target.masked();
         assert!(masked.contains("tk-s"));
