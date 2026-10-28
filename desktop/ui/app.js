@@ -304,6 +304,16 @@ function renderAll() {
   renderConnBar();
   renderHistory();
   renderUser();
+  renderDefaultServer();
+}
+
+/** 左栏「⚙ 代理地址」按钮提示当前统一默认地址。 */
+function renderDefaultServer() {
+  const btn = $('btn-default-server');
+  if (!btn) return;
+  btn.title = ws.defaultServer
+    ? `统一默认代理地址：${ws.defaultServer}（新建连接/登录/检查更新默认用它）`
+    : '统一默认代理地址：未设置（新建连接默认 127.0.0.1:5599）';
 }
 
 /* ── 选择 / 登录 ──────────────────────────────── */
@@ -455,7 +465,7 @@ async function runCount() {
 
 function editConnection(id) {
   const c = connectionOf(id) || {
-    name: '', project: '', server: 'http://127.0.0.1:5599', db: '', note: '', tokenSet: false,
+    name: '', project: '', server: ws.defaultServer || 'http://127.0.0.1:5599', db: '', note: '', tokenSet: false,
   };
   openDialog({
     title: id ? `编辑连接：${c.name}` : '新建连接',
@@ -711,6 +721,7 @@ $('btn-check').addEventListener('click', runSelfCheck);
 $('btn-clear-history').addEventListener('click', clearHistory);
 $('btn-export').addEventListener('click', exportWorkspace);
 $('btn-import').addEventListener('click', importWorkspace);
+$('btn-default-server').addEventListener('click', editDefaultServer);
 $('btn-user-login').addEventListener('click', openUserLogin);
 $('btn-check-update').addEventListener('click', checkUpdate);
 $('btn-do-update').addEventListener('click', doUpdate);
@@ -813,7 +824,7 @@ $('dlg-body').addEventListener('keydown', (event) => {
 
 let session = null;   // { server, user, builtin, permissions, summary }
 
-/** 默认代理地址：已登录 > 当前连接 > 临时连接串。 */
+/** 默认代理地址：已登录 > 当前连接 > 临时连接 > 统一默认设置。 */
 function sessionServer() {
   if (session && session.server) return session.server;
   const saved = currentId() ? connectionOf(currentId()) : null;
@@ -823,7 +834,27 @@ function sessionServer() {
     const hit = /Server=([^;]*)/i.exec(raw);
     if (hit) return hit[1].trim();
   }
-  return '';
+  return ws.defaultServer || '';
+}
+
+/** 统一默认代理地址（新建连接 / 登录 / 检查更新的缺省值）。 */
+function editDefaultServer() {
+  openDialog({
+    title: '统一默认代理地址',
+    body: `
+      <label>默认代理地址</label>
+      <input id="ds-server" placeholder="http://10.0.0.5:5599（留空 = 回到 127.0.0.1:5599）" value="${esc(ws.defaultServer || '')}">
+      <div class="hint">新建连接会默认带上这个地址；「登录代理」与「关于 → 检查更新」留空时也用它。
+      每个连接仍可单独写不同地址（比如开发库/测试库在另一台代理上）。</div>`,
+    okText: '保存',
+    ok: async () => {
+      const view = await guard(null, () => call('ws_set_default_server', { server: $('ds-server').value }));
+      if (!view) return false;
+      applyWs(view);
+      toast(view.defaultServer ? `默认代理地址：${view.defaultServer}` : '已清空默认代理地址（回到 127.0.0.1:5599）');
+      return true;
+    },
+  });
 }
 
 function renderUser() {

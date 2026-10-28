@@ -50,6 +50,7 @@
     <div class="side-foot">
       <button class="btn small" id="btn-export">导出</button>
       <button class="btn small" id="btn-import">导入</button>
+      <button class="btn small" id="btn-default-server" title="统一默认代理地址">⚙ 代理地址</button>
     </div>
   </aside>
 
@@ -160,7 +161,7 @@
         <div class="card-head">
           <h2>检查更新 <span class="hint-inline" id="update-current"></span></h2>
           <div class="row">
-            <input id="up-server" class="mini wide" placeholder="代理地址（留空 = 用当前连接 / 登录的代理）" spellcheck="false">
+            <input id="up-server" class="mini wide" placeholder="代理地址（留空 = 默认代理地址 / 当前连接）" spellcheck="false">
             <button class="btn" id="btn-check-update">检测更新</button>
             <button class="btn primary" id="btn-do-update" disabled>立即升级</button>
           </div>

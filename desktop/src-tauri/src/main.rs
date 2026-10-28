@@ -272,6 +272,21 @@ async fn ws_import(state: tauri::State<'_, AppState>, json_text: String) -> Resu
     .await
 }
 
+/// **统一默认代理地址**：登录 / 检查更新 / 新建连接都拿它当缺省（空 = 清空）。
+#[tauri::command]
+async fn ws_set_default_server(
+    state: tauri::State<'_, AppState>,
+    server: String,
+) -> Result<Value, String> {
+    let store = Arc::clone(&state.store);
+    run_blocking(move || {
+        let mut guard = store.lock().map_err(|_| "工作区锁异常".to_string())?;
+        guard.set_default_server(&server)?;
+        Ok(guard.snapshot())
+    })
+    .await
+}
+
 /* ── 执行 ───────────────────────────────────────── */
 
 /// `Login`：探明库类型与版本（顺带验证令牌与数据源名）。
@@ -565,6 +580,7 @@ fn main() {
             ws_clear_history,
             ws_export,
             ws_import,
+            ws_set_default_server,
             tool_login,
             tool_query,
             tool_execute,

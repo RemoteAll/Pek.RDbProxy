@@ -35,6 +35,9 @@ pub struct Workspace {
     /// 数据版本（后续迁移用）
     #[serde(default = "default_version")]
     pub version: u32,
+    /// **统一默认代理地址**（登录 / 检查更新 / 新建连接缺省都用它；空 = 没设过）
+    #[serde(default)]
+    pub default_server: String,
     /// 保存的连接
     #[serde(default)]
     pub connections: Vec<SavedConnection>,
@@ -54,6 +57,7 @@ impl Default for Workspace {
     fn default() -> Self {
         Self {
             version: VERSION,
+            default_server: String::new(),
             connections: Vec::new(),
             snippets: Vec::new(),
             history: Vec::new(),
@@ -239,6 +243,8 @@ pub struct WorkspaceView {
     pub snippets: Vec<SnippetView>,
     /// 历史（新→旧）
     pub history: Vec<HistoryView>,
+    /// **统一默认代理地址**（空 = 没设过，界面用 127.0.0.1:5599 兜底）
+    pub default_server: String,
     /// 历史上限
     pub history_limit: usize,
     /// 数据目录（界面「关于」展示）
@@ -340,9 +346,27 @@ impl Store {
             connections,
             snippets,
             history: self.data.history.iter().map(history_view).collect(),
+            default_server: self.data.default_server.clone(),
             history_limit: HISTORY_LIMIT,
             data_dir: self.dir.display().to_string(),
         }
+    }
+
+    /// 设置**统一默认代理地址**（登录 / 检查更新 / 新建连接都拿它当缺省）。
+    ///
+    /// 传空 = 清空（界面回到 `127.0.0.1:5599` 兜底）；缺协议前缀会自动补 `http://`。
+    pub fn set_default_server(&mut self, server: &str) -> Result<(), String> {
+        let text = server.trim();
+        let next = if text.is_empty() {
+            String::new()
+        } else {
+            crate::client::normalize_server(text)?
+        };
+        if next == self.data.default_server {
+            return Ok(());
+        }
+        self.data.default_server = next;
+        self.persist()
     }
 
     /// 取连接解出的可用 `Target`（令牌解密）。
@@ -608,6 +632,7 @@ impl Store {
             "version": VERSION,
             "exportedAtMs": now_ms(),
             "note": "含明文令牌，请妥善保管",
+            "defaultServer": self.data.default_server,
             "connections": connections,
             "snippets": self.data.snippets,
         });
@@ -629,7 +654,10 @@ impl Store {
             note: String,
         }
         #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
         struct ImportFile {
+            #[serde(default)]
+            default_server: String,
             #[serde(default)]
             connections: Vec<ImportConnection>,
             #[serde(default)]
@@ -637,6 +665,13 @@ impl Store {
         }
         let file: ImportFile =
             serde_json::from_str(json).map_err(|e| format!("导入文件格式不对：{e}"))?;
+        // 本机没设过默认代理地址时才采纳导入的（不覆盖使用者已选定的地址）
+        if self.data.default_server.trim().is_empty() {
+            let incoming = file.default_server.trim();
+            if !incoming.is_empty() {
+                self.data.default_server = crate::client::normalize_server(incoming)?;
+            }
+        }
         let mut imported_connections = 0usize;
         for item in file.connections {
             let existing = self.data.connections.iter().position(|c| {
@@ -962,6 +997,69 @@ mod tests {
         assert_eq!(other.connection_target(&id).unwrap().token, "tk-move");
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&other_dir).ok();
+    }
+
+    #[test]
+    fn default_server_is_normalized_persisted_and_cleared() {
+        let dir = temp_dir("default-server");
+        let mut store = Store::open(&dir).unwrap();
+        assert_eq!(store.snapshot().default_server, "", "初始为空");
+
+        // 缺协议 + 末尾斜杠 → 归一化
+        store.set_default_server("  10.0.0.5:5599/  ").unwrap();
+        assert_eq!(store.snapshot().default_server, "http://10.0.0.5:5599");
+
+        // 已落盘（重开还在）
+        let mut reopened = Store::open(&dir).unwrap();
+        assert_eq!(reopened.snapshot().default_server, "http://10.0.0.5:5599");
+
+        // 清空
+        reopened.set_default_server("").unwrap();
+        assert_eq!(reopened.snapshot().default_server, "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn old_workspace_without_default_server_field_still_loads() {
+        // 旧版本 workspace.json 没有 defaultServer 字段：不能因为新字段读不出来就丢工作区
+        let dir = temp_dir("old-ws");
+        std::fs::write(
+            dir.join(FILE_NAME),
+            r#"{"version":1,"connections":[],"snippets":[],"history":[]}"#,
+        )
+        .unwrap();
+        let store = Store::open(&dir).unwrap();
+        let view = store.snapshot();
+        assert_eq!(view.default_server, "");
+        assert!(view.connections.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn export_carries_default_server_and_import_only_fills_when_empty() {
+        let dir = temp_dir("ds-export");
+        let mut store = Store::open(&dir).unwrap();
+        store.set_default_server("http://10.0.0.5:5599").unwrap();
+        let exported = store.export().unwrap();
+        assert!(exported.contains("defaultServer"), "导出应带默认代理地址");
+        assert!(exported.contains("10.0.0.5:5599"));
+
+        // 本机没设过 → 采纳导入的
+        let blank_dir = temp_dir("ds-import-blank");
+        let mut blank = Store::open(&blank_dir).unwrap();
+        blank.import(&exported).unwrap();
+        assert_eq!(blank.snapshot().default_server, "http://10.0.0.5:5599");
+
+        // 本机已设过 → 不被导入覆盖
+        let set_dir = temp_dir("ds-import-set");
+        let mut existing = Store::open(&set_dir).unwrap();
+        existing.set_default_server("http://127.0.0.1:5599").unwrap();
+        existing.import(&exported).unwrap();
+        assert_eq!(existing.snapshot().default_server, "http://127.0.0.1:5599");
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&blank_dir).ok();
+        std::fs::remove_dir_all(&set_dir).ok();
     }
 
     #[test]
