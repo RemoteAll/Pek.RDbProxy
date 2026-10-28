@@ -897,8 +897,9 @@ function openUserLogin() {
   openDialog({
     title: '登录代理',
     body: `
-      <label>代理地址</label>
-      <input id="ul-server" placeholder="http://127.0.0.1:5599" value="${esc(server)}">
+      <div class="hint" style="margin-bottom:12px">将登录到 <b>${esc(server || '（还没设置代理地址）')}</b>${
+        server ? '（取自当前连接 / 左栏「⚙ 代理地址」）' : '：先在左栏「⚙ 代理地址」填一个'
+      }</div>
       <label>用户名</label>
       <input id="ul-user" placeholder="面板账号（admin 或面板「用户」里建的账号）">
       <label>密码</label>
@@ -907,10 +908,16 @@ function openUserLogin() {
       令牌只留在这台机器的进程内存里，不落盘、不下发页面。</div>`,
     okText: '登录',
     ok: async () => {
-      const server = $('ul-server').value.trim();
       const user = $('ul-user').value.trim();
       const password = $('ul-pass').value;
-      if (!server || !user || !password) { toast('三项都要填', 'error'); return false; }
+      if (!server) {
+        toast('还没有代理地址：先在左栏「⚙ 代理地址」设置，或选中一个连接', 'error');
+        return false;
+      }
+      if (!user || !password) {
+        toast('用户名和密码都要填', 'error');
+        return false;
+      }
       const view = await guard(null, () => call('user_login', { server, user, password }));
       if (!view) return false;
       session = view;
