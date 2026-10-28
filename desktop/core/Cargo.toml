@@ -2,12 +2,14 @@
 name = "pek-rdbproxy-tool-core"
 version = "0.1.0"
 edition = "2024"
-description = "Pek.RDbProxy 桌面工具核心：连接测试 / SQL 控制台 / 协议自检（复用 Pek.RCode DbClient）"
+description = "Pek.RDbProxy 桌面工具核心：连接测试 / SQL 控制台 / 协议自检 / 工作区存储"
 license = "MIT"
 
 [dependencies]
 # 复用代理协议客户端：`provider=network` 的同一套 `DbClient`（与项目侧完全同一条代码路径）
 # 不启用任何 `driver-*`：桌面工具只做 HTTP 客户端，不需要数据库驱动
 pek-rcode = { path = "../../../Pek.RCode", default-features = false, features = ["http-tls"] }
+# 令牌加密落盘（AES-256-GCM）+ 安全随机（id / 本机密钥）
+dhrust = { path = "../../../DH.RustBase", default-features = false, features = ["secret"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

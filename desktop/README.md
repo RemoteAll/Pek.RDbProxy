@@ -1,25 +1,39 @@
 # Pek.RDbProxy 桌面工具（Tauri 2）
 
-给代理配套的**桌面客户端**：填一行项目侧连接串，就能验证代理是否可用，也能当日常查数据的小工具。
+给代理配套的**桌面客户端**：左边按项目存连接与 SQL 片段，右边连上就能跑 SQL / 自检。
 
-- **连接测试**：`Login` → 显示 `DbType` / `Version`（同时验证令牌与数据源名）
-- **SQL 控制台**：查询结果表格、`Execute` 受影响行数、`GetTables`、`QueryCount`
-- **协议自检**：一键跑「Login → GetTables → Query →（可选）QueryCount / Execute → 错误信封」，
-  每项给 ✔/✘/○ 与耗时，失败给可操作原因
+- **连接（按项目分组）**：名称 / 项目 / 代理地址 / 数据源名 / 令牌 / 备注；单击选中、双击直接连；
+  列表带健康点（上次连接成功/失败），悬停可改 / 删
+- **SQL 片段**：命名 + 备注 + 可绑定连接；单击填入、双击直接跑；悬停可改 / 删；按使用次数排序
+- **执行历史**：用保存的连接执行后自动记录（SQL / 结果 / 行数 / 耗时），可一键「存为片段」、删除单条、清空
+- **控制台**：查询 / 执行写语句 / 表结构 / 记录数；结果可复制 CSV / JSON；`Ctrl+Enter` 查询、`Ctrl+Shift+Enter` 执行写语句
+- **协议自检**：Login → GetTables → Query →（可选）QueryCount / Execute → 错误信封，报告可一键复制
+- **导入 / 导出**：JSON；导出含明文令牌（有醒目提示），导入按「名称 + 数据源」合并
+- **草稿**：每个连接各存一份 SQL 草稿，切换连接不丢
 
 > 它本身就是**一个真实消费方**：请求走 `Pek.RCode` 的 `DbClient`，与项目里
 > `Server=…;Database=<数据源名>;Password=<令牌>;provider=network` **完全同一条代码路径**，
 > 所以这里跑通即说明真实客户端可用。
+
+## 数据与安全
+
+```text
+%APPDATA%\com.peikesmart.rdbproxytool\workspace.json   连接 + 片段 + 历史
+%APPDATA%\com.peikesmart.rdbproxytool\.key             本机密钥（不导出、不入库）
+```
+
+- 令牌用 **AES-256-GCM** 加密后落盘，界面只显示掩码；执行时由 Rust 侧解密，**令牌不下发到前端**。
+- 换电脑：导出 JSON（含明文令牌，注意保管）→ 新机器导入即可。
 
 ## 结构（照 `DHFangSite/TauriFangSite` 的成熟布局）
 
 ```
 desktop/
 ├─ Cargo.toml          # 独立嵌套工作区（根 Cargo.toml 用 exclude 排除）
-├─ core/               # 纯 Rust 逻辑：连接串解析 / 操作 / 自检（可 cargo test，进 CI）
-│  ├─ src/{lib,client,check}.rs
+├─ core/               # 纯 Rust 逻辑：连接串解析 / 操作 / 自检 / 工作区存储（可 cargo test，进 CI）
+│  ├─ src/{lib,client,check,store}.rs
 │  ├─ tests/protocol_stub.rs   # 最小 HTTP 桩：断言协议路径与出站 UA
-│  └─ examples/probe.rs        # 命令行自检（无 GUI，服务器/CI 可用）
+│  └─ examples/{probe,ws_seed}.rs   # 命令行自检 / 写入示例工作区
 ├─ src-tauri/          # Tauri 外壳：只做命令绑定（async + spawn_blocking）
 └─ ui/                 # 纯静态前端（frontendDist，无需 Vite/Node 构建链）
 ```
