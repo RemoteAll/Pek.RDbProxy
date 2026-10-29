@@ -194,6 +194,12 @@ pub struct Proxy {
     policy: RwLock<crate::policy::Policy>,
     /// 驱动组件源配置（面板「设置 → 驱动组件」可改，改完重建管理器）
     driver_store: RwLock<DriverStoreSection>,
+    /// 数据库服务层（承载**事务固定会话**等跨请求状态）。
+    ///
+    /// 以前每个请求都 `DbService::new()`：无状态时无妨，但事务必须跨请求存活
+    /// （`Db/Begin` 固定住的会话要在后续 `Db/Execute` / `Db/Commit` 里继续用），
+    /// 所以改成实例级常驻。令牌校验仍走 `registry.service`（那里才有令牌字典）。
+    service: DbService,
 }
 
 /// 监听地址热重绑钩子：入参为新的服务端配置，返回实际监听地址。
@@ -233,6 +239,7 @@ impl Proxy {
             policy: RwLock::new(crate::policy::load(base)),
             unknown_fields: crate::policy::UnknownFields::default(),
             driver_store: RwLock::new(config.driver_store.clone()),
+            service: DbService::new(),
         };
         // 启动即把仍是明文的连接串加密写回（存盘不再有明文密码）
         match proxy.migrate_encrypt() {
@@ -842,14 +849,20 @@ impl Proxy {
             }
         }
 
-        let service = DbService::new();
+        // 事务令牌：`provider=network` 客户端在事务中会带上（C# 客户端不会传）。
+        // 语句透明传给 `DbService::*_in`，服务端据此路由到 `Db/Begin` 固定住的会话。
+        let tx_owned = arg_str(&parsed, "tx");
+        let tx = Some(tx_owned.as_str()).filter(|s| !s.trim().is_empty());
+        // 用**实例级常驻** service：事务固定会话必须跨请求存活
+        // （旧代码每个请求 `DbService::new()`，事务状态会随请求丢失）。
+        let service = &self.service;
         match (method, action) {
             ("POST", "Login") => {
                 let info = service.login_info(dal);
                 self.record(&source.name, action, &token, "", started, true, 0, String::new(), user);
                 db_ok(json!({ "DbType": info.db_type, "Version": info.version }))
             }
-            ("POST", "Query") => match service.query(dal, &sql, parameters.as_ref()) {
+            ("POST", "Query") => match service.query_in(dal, tx, &sql, parameters.as_ref()) {
                 Ok(set) => {
                     let (filtered, note) = self.apply_field_policy(&source.name, set);
                     self.record(&source.name, action, &token, &sql, started, true, -1, note, user);
@@ -864,7 +877,7 @@ impl Proxy {
                     db_error(500, &e.to_string())
                 }
             },
-            ("POST", "Execute") => match service.execute(dal, &sql, parameters.as_ref()) {
+            ("POST", "Execute") => match service.execute_in(dal, tx, &sql, parameters.as_ref()) {
                 Ok(n) => {
                     self.record(&source.name, action, &token, &sql, started, true, n as i64, String::new(), user);
                     db_ok(json!({ "data": n }))
@@ -875,13 +888,52 @@ impl Proxy {
                 }
             },
             ("POST", "InsertAndGetIdentity") => {
-                match service.insert_and_get_identity(dal, &sql, parameters.as_ref()) {
+                match service.insert_and_get_identity_in(dal, tx, &sql, parameters.as_ref()) {
                     Ok(id) => {
                         self.record(&source.name, action, &token, &sql, started, true, 1, String::new(), user);
                         db_ok(json!({ "data": id }))
                     }
                     Err(e) => {
                         self.record(&source.name, action, &token, &sql, started, false, 0, e.to_string(), user);
+                        db_error(500, &e.to_string())
+                    }
+                }
+            }
+            // ── 事务（C# `DbServer` 没有这三个路由；客户端会自动探测/回退）
+            ("POST", "Begin") => match service.begin_tx(dal, &source.name) {
+                Ok(id) => {
+                    self.record(&source.name, action, &token, "", started, true, 0, String::new(), user);
+                    db_ok(json!({ "data": id }))
+                }
+                Err(e) => {
+                    self.record(&source.name, action, &token, "", started, false, 0, e.to_string(), user);
+                    db_error(500, &e.to_string())
+                }
+            },
+            ("POST", "Commit") | ("POST", "Rollback") => {
+                let r = if action == "Commit" {
+                    service.commit_tx(&source.name, &tx_owned)
+                } else {
+                    service.rollback_tx(&source.name, &tx_owned)
+                };
+                match r {
+                    Ok(()) => {
+                        // 审计只记“哪个事务、哪个动作”，不带 SQL 内容
+                        self.record(
+                            &source.name,
+                            action,
+                            &token,
+                            "",
+                            started,
+                            true,
+                            0,
+                            format!("tx={tx_owned}"),
+                            user,
+                        );
+                        db_ok(json!({ "data": 1 }))
+                    }
+                    Err(e) => {
+                        self.record(&source.name, action, &token, "", started, false, 0, e.to_string(), user);
                         db_error(500, &e.to_string())
                     }
                 }
@@ -923,7 +975,7 @@ impl Proxy {
             },
             _ => db_error(
                 404,
-                "未知路由（支持 Login/Query/Execute/InsertAndGetIdentity/QueryCount/GetTables）",
+                "未知路由（支持 Login/Query/Execute/InsertAndGetIdentity/QueryCount/GetTables/Begin/Commit/Rollback）",
             ),
         }
     }
