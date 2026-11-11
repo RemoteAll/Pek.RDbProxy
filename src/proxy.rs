@@ -1325,16 +1325,9 @@ pub fn verify_password(stored: &str, password: &str) -> bool {
     }
 }
 
-/// 常量时间字符串比较（长度不同直接 false）。
+/// 常量时间字符串比较（实现已下沉到 `dhrust::text::constant_time_eq`）。
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (a, b) in left.iter().zip(right.iter()) {
-        diff |= a ^ b;
-    }
-    diff == 0
+    dhrust::text::constant_time_eq(left, right)
 }
 
 /// 校验语句是否为只读（`SELECT`/`SHOW`/`DESC`/`EXPLAIN`/`PRAGMA`；`WITH` 需不含写关键字）。
